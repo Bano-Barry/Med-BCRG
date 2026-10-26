@@ -1,23 +1,20 @@
 # ==============================================================================
 # Étape 1 : Construction (Builder)
 # ==============================================================================
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
 # Dépendances système requises par Prisma sur Alpine Linux
 RUN apk add --no-cache openssl libc6-compat
 
-# Copie des fichiers de dépendances
+# Copie des fichiers de dépendances et de configuration Prisma (requis par postinstall: prisma generate)
 COPY package.json package-lock.json ./
-
-# Installation complète des dépendances (y compris devDependencies pour la compilation)
-RUN npm ci
-
-# Copie de la configuration Prisma et génération du client
-COPY prisma ./prisma
 COPY prisma.config.ts ./
-RUN npx prisma generate
+COPY prisma ./prisma
+
+# Installation des dépendances et exécution du postinstall (prisma generate)
+RUN npm ci
 
 # Copie des fichiers sources et de configuration TypeScript
 COPY tsconfig.json ./
@@ -33,7 +30,7 @@ RUN npm prune --production
 # ==============================================================================
 # Étape 2 : Image d'Exécution Minimale (Production Runner)
 # ==============================================================================
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 
