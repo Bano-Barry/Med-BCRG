@@ -16,6 +16,7 @@ RUN npm ci
 
 # Copie de la configuration Prisma et génération du client
 COPY prisma ./prisma
+COPY prisma.config.ts ./
 RUN npx prisma generate
 
 # Copie des fichiers sources et de configuration TypeScript
@@ -49,6 +50,7 @@ RUN mkdir -p /app/uploads/temp && chown -R node:node /app
 COPY --chown=node:node --from=builder /app/node_modules ./node_modules
 COPY --chown=node:node --from=builder /app/package.json ./package.json
 COPY --chown=node:node --from=builder /app/prisma ./prisma
+COPY --chown=node:node --from=builder /app/prisma.config.ts ./prisma.config.ts
 COPY --chown=node:node --from=builder /app/public ./public
 COPY --chown=node:node --from=builder /app/dist ./dist
 
