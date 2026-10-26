@@ -15,8 +15,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      # Expose le port 5432 si nécessaire pour des accès externes ou outils de gestion
-      - "${DB_PORT:-5432}:5432"
+      # Expose le port 5435 pour acces externe sans conflit avec le 5432 hote
+      - "${DB_PORT:-5435}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-infirmerie_bcrg}"]
       interval: 10s
