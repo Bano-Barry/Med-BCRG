@@ -8,7 +8,7 @@ echo "============================================================"
 # Attente et synchronisation du schéma de la base de données
 if [ "${AUTO_MIGRATE:-true}" = "true" ]; then
   echo "[1/3] Synchronisation du schéma PostgreSQL (prisma db push)..."
-  npx prisma db push --skip-generate
+  npx prisma db push --accept-data-loss
 else
   echo "[1/3] Synchronisation du schéma désactivée (AUTO_MIGRATE=false)."
 fi
