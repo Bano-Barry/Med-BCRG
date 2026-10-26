@@ -1,0 +1,55 @@
+/**
+ * @file doctor.routes.ts
+ * @description Point d'entree unifie de l'espace Medecin (/api/doctor).
+ * Protege l'ensemble des sous-modules par authentification et controle de role (DOCTOR).
+ */
+
+import { Router } from 'express';
+import { UserRole } from '@prisma/client';
+import {
+  authenticate,
+  requireRoles,
+  requirePasswordChanged,
+} from '../../core/middlewares/auth.middleware';
+import { doctorConsultationsRoutes } from './consultations/consultations.routes';
+import { patientsDoctorRoutes } from './patients/patients-doctor.routes';
+
+import { doctorDocumentsController } from './documents/doctor-documents.controller';
+import { doctorDashboardController } from './dashboard/doctor-dashboard.controller';
+import { doctorAgendaRoutes } from './agenda/doctor-agenda.routes';
+
+const router = Router();
+
+// 1. Authentification obligatoire pour tout le perimetre medecin
+router.use(authenticate);
+
+// 2. Renouvellement prealable du mot de passe temporaire requis
+router.use(requirePasswordChanged);
+
+// 3. Controle strict RBAC : reserve exclusivement au profil DOCTOR
+router.use(requireRoles(UserRole.DOCTOR));
+
+// 4. Tableau de bord medecin unifie
+router.get('/dashboard', doctorDashboardController.getDashboard.bind(doctorDashboardController));
+
+// 5. Enregistrement des sous-modules
+router.use('/consultations', doctorConsultationsRoutes);
+router.use('/patients', patientsDoctorRoutes);
+
+// Agenda et gestion des rendez-vous
+router.use('/agenda', doctorAgendaRoutes);
+router.use('/appointments', doctorAgendaRoutes);
+
+// 6. Consultation et telechargement de documents medicaux (ordonnances, etc.)
+router.get(
+  '/documents/:documentId/view',
+  doctorDocumentsController.viewDocument.bind(doctorDocumentsController)
+);
+router.get(
+  '/documents/:documentId/download',
+  doctorDocumentsController.downloadDocument.bind(doctorDocumentsController)
+);
+
+export const doctorRoutes = router;
+
+

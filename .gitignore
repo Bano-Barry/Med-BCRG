@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.production.example
+node_modules/
+dist/
+*.log
+.vscode/
+.idea/

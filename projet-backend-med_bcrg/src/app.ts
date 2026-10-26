@@ -1,0 +1,140 @@
+/**
+ * @file app.ts
+ * @description Usine d'instanciation et de configuration de l'application Express.
+ * Configure la pile de middlewares (securite Helmet, CORS, cookies, parsing JSON, journalisation Morgan)
+ * et enregistre les points d'entree de l'API.
+ */
+
+import express, { Application, Request, Response, NextFunction } from 'express';
+import path from 'path';
+import cors from 'cors';
+import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
+import morgan from 'morgan';
+import { env } from './config/env';
+import { errorHandler } from './core/middlewares/error.middleware';
+import { NotFoundError } from './core/errors';
+import { UserRole } from '@prisma/client';
+import { authRoutes } from './modules/auth/auth.routes';
+import { patientsRoutes } from './modules/patients/patients.routes';
+import { doctorRoutes } from './modules/doctor/doctor.routes';
+import { hrRoutes } from './modules/hr/hr.routes';
+import { patientRoutes } from './modules/patient/patient.routes';
+import { doctorConsultationsRoutes } from './modules/doctor/consultations/consultations.routes';
+import {
+  authenticate,
+  requireRoles,
+  requirePasswordChanged,
+} from './core/middlewares/auth.middleware';
+import { setupSwagger } from './docs/swagger';
+
+/**
+ * Cree et configure une nouvelle instance de l'application Express.
+ *
+ * @returns Instance configuree d'Express Application
+ */
+export const createApp = (): Application => {
+  const app = express();
+
+  // En-tetes de securite HTTP
+  app.use(
+    helmet({
+      contentSecurityPolicy: false, // Necessaire pour le rendu des scripts et styles Swagger UI
+    })
+  );
+
+  // Origines autorisées pour le partage de ressources transverses (CORS)
+  const allowedOrigins = [
+    env.CORS_ORIGIN,
+    env.BCRG_HUB_URL,
+    'http://localhost:3003',
+    'http://127.0.0.1:3003',
+    'http://localhost:5003',
+    'http://127.0.0.1:5003',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:5000',
+    'http://localhost:5001',
+  ].flatMap((o) => (o ? o.split(',').map((s) => s.trim()) : [])).filter(Boolean);
+
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin) || env.NODE_ENV !== 'production') {
+          return callback(null, true);
+        }
+        return callback(null, false);
+      },
+      credentials: true,
+    })
+  );
+
+  // Journalisation des requetes HTTP
+  app.use(morgan(env.NODE_ENV === 'development' ? 'dev' : 'combined'));
+
+  // Analyse des corps de requetes JSON et URL-encoded
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
+
+  // Analyse des cookies de session
+  app.use(cookieParser());
+
+  // Fichiers statiques (documentation autonome, assets)
+  app.use('/static', express.static(path.resolve(__dirname, '../public')));
+
+  // Configuration de la documentation interactive Swagger UI
+  setupSwagger(app);
+
+  // Point d'accueil et informations generales sur l'API
+  app.get('/', (_req: Request, res: Response) => {
+    res.status(200).json({
+      name: 'API Infirmerie BCRG',
+      version: '1.0.0',
+      status: 'UP',
+      description: 'Systeme de gestion de l\'infirmerie de la Banque Centrale de la Republique de Guinee',
+      endpoints: {
+        auth: '/api/auth',
+        employees: '/api/employees',
+        doctor: '/api/doctor',
+        docs: '/api/docs',
+      },
+    });
+  });
+
+  // Point de controle de disponibilite (Health Check)
+  app.get('/api/health', (_req: Request, res: Response) => {
+    res.status(200).json({
+      status: 'UP',
+      service: 'backend-med-bcrg',
+      timestamp: new Date().toISOString(),
+      environment: env.NODE_ENV,
+    });
+  });
+
+  // Enregistrement des modules de l'API REST
+  app.use('/api/auth', authRoutes);
+  app.use('/api/employees', patientsRoutes);
+  app.use('/api/doctor', doctorRoutes);
+  app.use('/api/hr', hrRoutes);
+  app.use('/api/admin', hrRoutes);
+  app.use('/api/patient', patientRoutes);
+
+  // Alias direct pour compatibilite avec les appels frontend /api/consultations
+  app.use(
+    '/api/consultations',
+    authenticate,
+    requirePasswordChanged,
+    requireRoles(UserRole.DOCTOR),
+    doctorConsultationsRoutes
+  );
+
+  // Interception des routes non referencees (404)
+  app.use((req: Request, _res: Response, next: NextFunction) => {
+    next(new NotFoundError(`Route introuvable : ${req.method} ${req.originalUrl}`));
+  });
+
+  // Gestionnaire d'erreurs centralise
+  app.use(errorHandler);
+
+  return app;
+};

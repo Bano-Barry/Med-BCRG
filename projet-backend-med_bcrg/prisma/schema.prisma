@@ -1,0 +1,359 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==============================================================================
+// ENUMS
+// ==============================================================================
+enum UserRole {
+  DOCTOR
+  EMPLOYEE
+  HR
+
+  @@map("user_role")
+}
+
+enum AllergyType {
+  DRUG
+  FOOD
+  OCCUPATIONAL
+  OTHER
+
+  @@map("allergy_type_enum")
+}
+
+enum AllergySeverity {
+  MILD
+  MODERATE
+  SEVERE
+
+  @@map("allergy_severity_enum")
+}
+
+enum ConsultationStatus {
+  WAITING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+
+  @@map("consultation_status_enum")
+}
+
+enum ConsultationType {
+  GENERAL
+  INSTANT
+  PERIODIC
+
+  @@map("consultation_type_enum")
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  CONFIRMED
+  RESCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+
+  @@map("appointment_status_enum")
+}
+
+// ==============================================================================
+// 1. UTILISATEURS & AUTHENTIFICATION
+// ==============================================================================
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  matricule    String    @unique @db.VarChar(50)
+  email        String?   @unique @db.VarChar(255)
+  passwordHash String    @map("password_hash") @db.VarChar(255)
+  firstName    String    @map("first_name") @db.VarChar(100)
+  lastName     String    @map("last_name") @db.VarChar(100)
+  role         UserRole  @default(EMPLOYEE)
+  phone        String?   @unique @db.VarChar(30)
+  department   String?   @db.VarChar(100)
+  jobTitle     String?   @map("job_title") @db.VarChar(100)
+  isFirstLogin Boolean   @default(true) @map("is_first_login")
+  isActive     Boolean   @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  patient             Patient?
+  doctorConsultations Consultation[]    @relation("DoctorConsultations")
+  doctorAppointments  Appointment[]     @relation("DoctorAppointments")
+  uploadedDocuments   MedicalDocument[] @relation("DocumentUploader")
+  auditLogs           AuditLog[]        @relation("ActorAuditLogs")
+
+  @@index([matricule])
+  @@map("users")
+}
+
+// ==============================================================================
+// 2. DOSSIER PATIENT / COLLABORATEUR
+// ==============================================================================
+model Patient {
+  id                 String   @id @default(uuid()) @db.Uuid
+  userId             String   @unique @map("user_id") @db.Uuid
+  registrationNumber String   @unique @map("registration_number") @db.VarChar(50)
+  gender             String   @db.VarChar(10)
+  phone              String?  @unique @db.VarChar(30)
+  bloodGroup         String?  @map("blood_group") @db.VarChar(5)
+  medicalHistory     String?  @map("medical_history") @db.Text
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  allergies        PatientAllergy[]
+  consultations    Consultation[]
+  appointments     Appointment[]
+  vitalSigns       VitalSign[]
+  glycemiaChecks   GlycemiaCheck[]
+  sickLeaves       SickLeave[]
+  medicalDocuments MedicalDocument[]
+  auditLogs        AuditLog[]        @relation("TargetPatientAuditLogs")
+
+  @@index([registrationNumber])
+  @@index([userId])
+  @@map("patients")
+}
+
+// ==============================================================================
+// 3. ALLERGIES DETAILLEES (EF-2.2)
+// ==============================================================================
+model PatientAllergy {
+  id              String          @id @default(uuid()) @db.Uuid
+  patientId       String          @map("patient_id") @db.Uuid
+  allergyType     AllergyType     @map("allergy_type")
+  substance       String          @db.VarChar(150)
+  reactionDetails String?         @map("reaction_details") @db.Text
+  severity        AllergySeverity @default(MODERATE)
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@map("patient_allergies")
+}
+
+// ==============================================================================
+// 4. CONSULTATIONS CLINIQUES (EF-3.1, EF-3.2)
+// ==============================================================================
+model Consultation {
+  id                  String             @id @default(uuid()) @db.Uuid
+  patientId           String             @map("patient_id") @db.Uuid
+  doctorId            String             @map("doctor_id") @db.Uuid
+  consultationDate    DateTime           @default(now()) @map("consultation_date") @db.Timestamptz
+  type                ConsultationType   @default(GENERAL)
+  status              ConsultationStatus @default(IN_PROGRESS)
+  reason              String             @db.Text
+  symptoms            String             @db.Text
+  physicalExamination String?            @map("physical_examination") @db.Text
+  diagnosis           String?            @db.Text
+  advice              String?            @db.Text
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+
+  patient          Patient           @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  doctor           User              @relation("DoctorConsultations", fields: [doctorId], references: [id], onDelete: Restrict)
+  vitalSigns       VitalSign[]
+  prescriptions    Prescription[]
+  sickLeave        SickLeave?
+  medicalDocuments MedicalDocument[]
+  glycemiaCheck    GlycemiaCheck?
+
+  @@index([patientId])
+  @@index([doctorId])
+  @@index([status])
+  @@index([consultationDate])
+  @@map("consultations")
+}
+
+// ==============================================================================
+// 5. CONSTANTES VITALES HISTORISEES (EF-3.1)
+// ==============================================================================
+model VitalSign {
+  id             String   @id @default(uuid()) @db.Uuid
+  consultationId String   @map("consultation_id") @db.Uuid
+  patientId      String   @map("patient_id") @db.Uuid
+  weightKg       Decimal? @map("weight_kg") @db.Decimal(5, 2)
+  heightCm       Decimal? @map("height_cm") @db.Decimal(5, 2)
+  bmi            Decimal? @db.Decimal(4, 1)
+  temperatureC   Decimal? @map("temperature_c") @db.Decimal(4, 2)
+  bloodPressure  String?  @map("blood_pressure") @db.VarChar(20)
+  measuredAt     DateTime @default(now()) @map("measured_at") @db.Timestamptz
+
+  consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  patient      Patient      @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+  @@map("vital_signs")
+}
+
+// ==============================================================================
+// 6. PRESCRIPTIONS MEDICAMENTEUSES (EF-3.2)
+// ==============================================================================
+model Prescription {
+  id             String   @id @default(uuid()) @db.Uuid
+  consultationId String   @map("consultation_id") @db.Uuid
+  medicationName String   @map("medication_name") @db.VarChar(150)
+  dosage         String   @db.VarChar(100)
+  frequency      String?  @db.VarChar(100)
+  duration       String   @db.VarChar(50)
+  instructions   String?  @db.Text
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+
+  @@index([consultationId])
+  @@map("prescriptions")
+}
+
+// ==============================================================================
+// 7. ARRETS DE TRAVAIL (EF-3.2)
+// ==============================================================================
+model SickLeave {
+  id             String   @id @default(uuid()) @db.Uuid
+  consultationId String   @unique @map("consultation_id") @db.Uuid
+  patientId      String   @map("patient_id") @db.Uuid
+  startDate      DateTime @map("start_date") @db.Date
+  endDate        DateTime @map("end_date") @db.Date
+  daysCount      Int      @map("days_count")
+  reason         String?  @db.Text
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  patient      Patient      @relation(fields: [patientId], references: [id], onDelete: Restrict)
+
+  @@index([patientId])
+  @@map("sick_leaves")
+}
+
+// ==============================================================================
+// 8. DOCUMENTS MEDICAUX & GED (EF-9.1)
+// ==============================================================================
+model MedicalDocument {
+  id             String   @id @default(uuid()) @db.Uuid
+  patientId      String   @map("patient_id") @db.Uuid
+  consultationId String?  @map("consultation_id") @db.Uuid
+  documentName   String   @map("document_name") @db.VarChar(255)
+  mimeType       String   @map("mime_type") @db.VarChar(100)
+  fileSizeBytes  Int      @map("file_size_bytes")
+  storagePath    String   @map("storage_path") @db.VarChar(500)
+  documentType   String   @map("document_type") @db.VarChar(50)
+  version        Int      @default(1)
+  uploadedBy     String   @map("uploaded_by") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  patient      Patient       @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  consultation Consultation? @relation(fields: [consultationId], references: [id], onDelete: SetNull)
+  uploader     User          @relation("DocumentUploader", fields: [uploadedBy], references: [id], onDelete: Restrict)
+
+  @@index([patientId])
+  @@map("medical_documents")
+}
+
+// ==============================================================================
+// 9. JOURNAL D'AUDIT & TRACABILITE (EF-6.3, Sécurité 4.1)
+// ==============================================================================
+model AuditLog {
+  id              BigInt   @id @default(autoincrement())
+  actorId         String?  @map("actor_id") @db.Uuid
+  action          String   @db.VarChar(50)
+  targetPatientId String?  @map("target_patient_id") @db.Uuid
+  resourceType    String   @map("resource_type") @db.VarChar(50)
+  resourceId      String?  @map("resource_id") @db.VarChar(100)
+  ipAddress       String?  @map("ip_address") @db.VarChar(45)
+  userAgent       String?  @map("user_agent") @db.Text
+  metadata        Json?    @db.JsonB
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  actor         User?    @relation("ActorAuditLogs", fields: [actorId], references: [id], onDelete: SetNull)
+  targetPatient Patient? @relation("TargetPatientAuditLogs", fields: [targetPatientId], references: [id], onDelete: SetNull)
+
+  @@index([actorId])
+  @@index([targetPatientId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ==============================================================================
+// 10. SUIVI GLYCÉMIQUE INTÉGRÉ (V4)
+// ==============================================================================
+model GlycemiaCheck {
+  id             String   @id @default(uuid()) @db.Uuid
+  consultationId String   @unique @map("consultation_id") @db.Uuid
+  patientId      String   @map("patient_id") @db.Uuid
+  performed      Boolean  @default(true)
+  value          Decimal? @db.Decimal(5, 2)
+  unit           String   @default("g/L") @db.VarChar(10)
+  measuredAt     DateTime @default(now()) @map("measured_at") @db.Timestamptz
+
+  consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  patient      Patient      @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+  @@index([measuredAt])
+  @@map("glycemia_checks")
+}
+
+// ==============================================================================
+// 11. STOCK THÉORIQUE DE FOURNITURES MÉDICALES (Bandelettes, etc.) (V4)
+// ==============================================================================
+model MedicalSupplyStock {
+  id           String   @id @default(uuid()) @db.Uuid
+  itemKey      String   @unique @map("item_key") @db.VarChar(50) // ex: "GLUCOSE_STRIPS"
+  label        String   @db.VarChar(150)
+  initialStock Int      @default(0) @map("initial_stock")
+  unit         String   @default("unité") @db.VarChar(30)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("medical_supply_stocks")
+}
+
+// ==============================================================================
+// 12. RENDEZ-VOUS MEDICAUX (PATIENT & AGENDA MEDECIN)
+// ==============================================================================
+model Appointment {
+  id                 String            @id @default(uuid()) @db.Uuid
+  patientId          String            @map("patient_id") @db.Uuid
+  doctorId           String?           @map("doctor_id") @db.Uuid
+  appointmentDate    DateTime          @map("appointment_date") @db.Date
+  scheduledTime      String            @map("scheduled_time") @db.VarChar(10) // "09:00", "14:30"
+  durationMinutes    Int               @default(30) @map("duration_minutes")
+  type               ConsultationType  @default(GENERAL)
+  status             AppointmentStatus @default(SCHEDULED)
+  reason             String?           @db.Text
+  doctorNotes        String?           @map("doctor_notes") @db.Text
+  cancellationReason String?           @map("cancellation_reason") @db.Text
+  createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime          @updatedAt @map("updated_at") @db.Timestamptz
+
+  patient      Patient       @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctor       User?         @relation("DoctorAppointments", fields: [doctorId], references: [id], onDelete: SetNull)
+
+  @@index([patientId])
+  @@index([doctorId])
+  @@index([appointmentDate])
+  @@index([status])
+  @@map("appointments")
+}
+
+// ==============================================================================
+// 13. CONFIGURATION PERIODICITE DES VISITES (ADMIN / RH)
+// ==============================================================================
+model VisitPeriodicitySetting {
+  id                      String   @id @default(uuid()) @db.Uuid
+  standardFrequencyMonths Int      @default(12) @map("standard_frequency_months") // Standard (12 mois)
+  smrFrequencyMonths      Int      @default(6)  @map("smr_frequency_months")      // SMR (6 mois)
+  reminderLeadDays        Int      @default(30) @map("reminder_lead_days")        // Relance RH (30 jours)
+  updatedBy               String?  @map("updated_by") @db.Uuid
+  updatedAt               DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("visit_periodicity_settings")
+}
+
