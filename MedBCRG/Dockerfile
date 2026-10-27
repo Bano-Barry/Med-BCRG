@@ -5,8 +5,10 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+ENV NODE_ENV=development
+
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --include=dev
 
 # Variables de build injectées dans le bundle Vite
 ARG VITE_API_URL=""
