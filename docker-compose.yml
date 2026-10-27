@@ -72,7 +72,7 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_URL: ${VITE_API_URL:-}
-        VITE_BCRG_HUB_URL: ${VITE_BCRG_HUB_URL:-http://localhost:5001}
+        VITE_BCRG_HUB_URL: ${VITE_BCRG_HUB_URL:-http://localhost:3001}
     container_name: medbcrg-frontend
     restart: unless-stopped
     depends_on:

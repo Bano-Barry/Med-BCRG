@@ -4,9 +4,8 @@ import { User, Lock, Eye, EyeOff, LogIn, Globe, ShieldAlert } from 'lucide-react
 import { useAuth } from '../../hooks/useAuth';
 import { useNotifications } from '../../hooks/useNotifications';
 import { apiService } from '../../services/api';
+import { getBcrgHubUrl } from '../../utils/constants';
 import medLogo from '../../assets/icon_Med.png';
-
-const BCRG_HUB_URL = import.meta.env.VITE_BCRG_HUB_URL || 'http://localhost:5173';
 
 export const LoginPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -73,7 +72,7 @@ export const LoginPage: React.FC = () => {
   }, [searchParams, loginWithSso, navigate]);
 
   const handleHubSsoRedirect = () => {
-    window.location.href = BCRG_HUB_URL;
+    window.location.href = getBcrgHubUrl();
   };
 
   const handleLogin = async (e: React.FormEvent) => {

@@ -17,6 +17,7 @@ import {
   DueEmployeeItem,
   AvailableSlotsResponse
 } from '../types';
+import { getBcrgHubUrl } from '../utils/constants';
 
 const INITIAL_MEDICATIONS: Medication[] = [];
 
@@ -48,9 +49,8 @@ export const fetchAuth = async (input: RequestInfo | URL, init?: RequestInit): P
   if (response.status === 401) {
     sessionStorage.removeItem('bcrg_access_token');
     sessionStorage.removeItem('bcrg_auth_user');
-    const hubUrl = import.meta.env.VITE_BCRG_HUB_URL || 'http://localhost:5173';
     if (!window.location.pathname.includes('/login')) {
-      window.location.href = hubUrl;
+      window.location.href = getBcrgHubUrl();
     }
   }
 

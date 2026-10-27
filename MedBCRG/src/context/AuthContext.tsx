@@ -1,5 +1,6 @@
 import React, { createContext, useState, useEffect } from 'react';
 import { User, UserRole } from '../types';
+import { getBcrgHubUrl } from '../utils/constants';
 
 interface AuthContextType {
   user: User | null;
@@ -177,8 +178,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     sessionStorage.removeItem('bcrg_auth_user');
     sessionStorage.removeItem('bcrg_access_token');
     setUser(null);
-    const hubUrl = import.meta.env.VITE_BCRG_HUB_URL || 'http://localhost:5173';
-    window.location.href = hubUrl;
+    window.location.href = getBcrgHubUrl();
   };
 
   // Surveillance proactive de la validité de la session (Single Logout - SLO)
