@@ -45,7 +45,7 @@ const envSchema = z.object({
   /** Configuration SSO BCRG HUB */
   BCRG_HUB_URL: z.string().default('http://localhost:5001'),
   BCRG_HUB_JWKS_URL: z.string().default('http://localhost:5001/api/security/.well-known/jwks.json'),
-  BCRG_HUB_JWT_SECRET: z.string().default('supersecret_sso_portal_key_2026'),
+  BCRG_HUB_JWT_SECRET: z.string().default('supersecret_bcrg_hub_production_jwt_key_2026'),
   BCRG_HUB_PUBLIC_KEY_PATH: z.string().optional(),
   BCRG_HUB_PUBLIC_KEY: z.string().optional(),
 });

@@ -127,6 +127,17 @@ class SsoService {
       throw new UnauthorizedError('Structure de jeton SSO invalide.');
     }
 
+    console.log('[SSO MedBCRG] Jeton SSO reçu :', {
+      alg: decodedUnverified.header?.alg,
+      typ: decodedUnverified.header?.typ,
+      kid: (decodedUnverified.header as any)?.kid,
+      issuer: (decodedUnverified.payload as any)?.iss,
+      subject: (decodedUnverified.payload as any)?.sub,
+      email: (decodedUnverified.payload as any)?.email,
+      matricule: (decodedUnverified.payload as any)?.matricule,
+      exp: (decodedUnverified.payload as any)?.exp,
+    });
+
     const alg = decodedUnverified.header?.alg;
     let payload: any = null;
 
@@ -165,7 +176,10 @@ class SsoService {
 
       const candidateSecrets = [
         ...configuredSecrets,
+        'supersecret_bcrg_hub_production_jwt_key_2026',
+        'bcrg_hub_super_secret_jwt_key_a_changer_en_production_2026',
         'supersecret_sso_portal_key_2026',
+        'your_jwt_secret_change_in_production',
         env.JWT_ACCESS_SECRET,
       ].filter((s, idx, arr) => Boolean(s) && arr.indexOf(s) === idx) as string[];
 
