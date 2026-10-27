@@ -159,11 +159,33 @@ class SsoService {
         }
       }
     } else if (alg === 'HS256') {
-      const symmetricSecret = env.BCRG_HUB_JWT_SECRET || 'supersecret_sso_portal_key_2026';
-      try {
-        payload = jwt.verify(token, symmetricSecret, { algorithms: ['HS256'] });
-      } catch (err: any) {
-        throw new UnauthorizedError(`Jeton SSO HMAC invalide ou expiré : ${err.message}`);
+      const configuredSecrets = env.BCRG_HUB_JWT_SECRET
+        ? env.BCRG_HUB_JWT_SECRET.split(',').map((s) => s.trim()).filter(Boolean)
+        : [];
+
+      const candidateSecrets = [
+        ...configuredSecrets,
+        'supersecret_sso_portal_key_2026',
+        env.JWT_ACCESS_SECRET,
+      ].filter((s, idx, arr) => Boolean(s) && arr.indexOf(s) === idx) as string[];
+
+      let lastError: Error | null = null;
+      for (const secret of candidateSecrets) {
+        try {
+          payload = jwt.verify(token, secret, { algorithms: ['HS256'] });
+          lastError = null;
+          break;
+        } catch (err: any) {
+          lastError = err;
+        }
+      }
+
+      if (lastError || !payload) {
+        console.error(
+          `[SSO MedBCRG] Échec de validation du jeton SSO HMAC : ${lastError?.message}. ` +
+          `Vérifiez que BCRG_HUB_JWT_SECRET dans le fichier .env correspond à la clé secrète de signature utilisée par le portail BCRG HUB.`
+        );
+        throw new UnauthorizedError(`Jeton SSO HMAC invalide ou expiré : ${lastError?.message}`);
       }
     } else {
       throw new UnauthorizedError(`Algorithme de jeton non pris en charge : ${alg}`);

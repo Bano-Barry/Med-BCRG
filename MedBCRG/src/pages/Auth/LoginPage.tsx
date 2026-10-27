@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { User, Lock, Eye, EyeOff, LogIn, Globe, ShieldAlert } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
@@ -17,6 +17,7 @@ export const LoginPage: React.FC = () => {
   
   const [isSsoAuthenticating, setIsSsoAuthenticating] = useState(false);
   const [ssoError, setSsoError] = useState<string | null>(null);
+  const attemptedTokenRef = useRef<string | null>(null);
 
   const { login, loginWithSso } = useAuth();
   const { showToast } = useNotifications();
@@ -42,26 +43,34 @@ export const LoginPage: React.FC = () => {
     }
   };
 
-  // Détection et traitement automatique d'un jeton SSO émis par le BCRG HUB
+  // Détection et traitement unique d'un jeton SSO émis par le BCRG HUB
   useEffect(() => {
     const ssoToken = searchParams.get('sso_token');
-    if (ssoToken && !isSsoAuthenticating) {
-      setIsSsoAuthenticating(true);
-      loginWithSso(ssoToken)
-        .then((result) => {
-          if (result.success) {
-            redirectByRole(result.role);
-          } else {
-            setSsoError(result.error || 'Échec de validation du jeton SSO.');
-            setIsSsoAuthenticating(false);
-          }
-        })
-        .catch((err: any) => {
-          setSsoError(err.message || 'Échec de validation du jeton SSO.');
-          setIsSsoAuthenticating(false);
-        });
+    if (!ssoToken || attemptedTokenRef.current === ssoToken) {
+      return;
     }
-  }, [searchParams, isSsoAuthenticating]);
+
+    attemptedTokenRef.current = ssoToken;
+    setIsSsoAuthenticating(true);
+    setSsoError(null);
+
+    loginWithSso(ssoToken)
+      .then((result) => {
+        if (result.success) {
+          redirectByRole(result.role);
+        } else {
+          setSsoError(result.error || 'Échec de validation du jeton SSO.');
+          setIsSsoAuthenticating(false);
+          // Nettoyer le paramètre sso_token de l'URL pour éviter les boucles infinies de rafraîchissement
+          navigate('/login', { replace: true });
+        }
+      })
+      .catch((err: any) => {
+        setSsoError(err.message || 'Échec de validation du jeton SSO.');
+        setIsSsoAuthenticating(false);
+        navigate('/login', { replace: true });
+      });
+  }, [searchParams, loginWithSso, navigate]);
 
   const handleHubSsoRedirect = () => {
     window.location.href = BCRG_HUB_URL;
