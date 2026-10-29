@@ -88,12 +88,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           matricule: matriculeValue,
           phone: phone,
           jobTitle: jobTitle || (mappedRole === 'ADMIN' ? 'Responsable RH' : undefined),
+          isFirstLogin: Boolean(userData.isFirstLogin),
         };
         
         setUser(mappedUser);
         return { success: true, role: mappedUser.role, isFirstLogin: userData.isFirstLogin };
       } else {
-        return { success: false, error: data.message || 'Identifiants incorrects' };
+        const fieldError = Array.isArray(data.errors) && data.errors.length > 0 ? data.errors[0].message : null;
+        return { success: false, error: fieldError || data.message || 'Identifiants incorrects' };
       }
     } catch (err) {
       return { success: false, error: 'Erreur de connexion au serveur' };
@@ -162,6 +164,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           matricule: matriculeValue,
           phone: phone,
           jobTitle: jobTitle || (mappedRole === 'ADMIN' ? 'Responsable RH' : undefined),
+          isFirstLogin: false,
         };
 
         setUser(mappedUser);
@@ -175,6 +178,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = () => {
+    const token = sessionStorage.getItem('bcrg_access_token');
+    if (token) {
+      fetch(`${API_BASE_URL}/api/auth/logout`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      }).catch(() => {});
+    }
     sessionStorage.removeItem('bcrg_auth_user');
     sessionStorage.removeItem('bcrg_access_token');
     setUser(null);

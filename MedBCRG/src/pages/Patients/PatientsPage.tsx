@@ -1,15 +1,32 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Plus, UserPlus, FileText, Users, MoreHorizontal, X, Eye, Download, Activity, HeartPulse, AlertCircle, Calendar, Stethoscope, Droplet, FolderOpen } from 'lucide-react';
+import { Search, UserPlus, FileText, Users, MoreHorizontal, X, Eye, Download, HeartPulse, AlertCircle, Droplet, FolderOpen } from 'lucide-react';
 import { Patient, PatientMedicalRecord } from '../../types';
 import { apiService, fetchDocumentBlob, downloadDocumentBlob } from '../../services/api';
 import { Badge } from '../../components/common/Badge';
-import { PATIENT_CATEGORIES_LABEL } from '../../utils/constants';
 import { formatDate } from '../../utils/formatters';
+import { useNotifications } from '../../hooks/useNotifications';
 
 export const PatientsPage: React.FC = () => {
+  const { showToast } = useNotifications();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [search, setSearch] = useState('');
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
+
+  // Add Patient Modal State
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [addForm, setAddForm] = useState({
+    matricule: '',
+    firstName: '',
+    lastName: '',
+    email: '',
+    phone: '',
+    gender: 'M' as 'M' | 'F',
+    department: '',
+    jobTitle: '',
+    bloodGroup: '',
+    medicalHistory: ''
+  });
 
   // Side panel state
   const [openPatient, setOpenPatient] = useState<Patient | null>(null);
@@ -18,6 +35,11 @@ export const PatientsPage: React.FC = () => {
   const [patientConsultations, setPatientConsultations] = useState<any[]>([]);
   const [patientDocuments, setPatientDocuments] = useState<any[]>([]);
   const [isLoadingRecord, setIsLoadingRecord] = useState(false);
+
+  // Allergy form state
+  const [newAllergySubstance, setNewAllergySubstance] = useState('');
+  const [newAllergyType, setNewAllergyType] = useState<'DRUG' | 'FOOD' | 'OCCUPATIONAL' | 'OTHER'>('DRUG');
+  const [newAllergySeverity, setNewAllergySeverity] = useState<'MILD' | 'MODERATE' | 'SEVERE'>('MODERATE');
 
   // In-app Document Preview Modal
   const [previewDoc, setPreviewDoc] = useState<{
@@ -65,46 +87,54 @@ export const PatientsPage: React.FC = () => {
     setPreviewDoc(null);
   };
 
-  useEffect(() => {
+  const loadPatients = () => {
     apiService.getPatients().then(setPatients);
+  };
+
+  useEffect(() => {
+    loadPatients();
   }, []);
+
+  const loadOpenPatientDetails = async (patient: Patient) => {
+    setIsLoadingRecord(true);
+    try {
+      const [record, docs] = await Promise.all([
+        apiService.getPatientMedicalRecord(patient.id),
+        apiService.getPatientDocuments(patient.id)
+      ]);
+      setMedicalRecord(record);
+      let currentDocs = docs || [];
+
+      let consults: any[] = (record?.consultations as any[]) || [];
+      if (!consults || consults.length === 0) {
+        const allConsults = await apiService.getConsultations();
+        consults = allConsults.filter(c => c.patientId === patient.id || c.patientMatricule === patient.matricule);
+      }
+      setPatientConsultations(consults);
+
+      const consultsWithPrescriptions = consults.filter((c: any) => (c.prescriptions && c.prescriptions.length > 0) || (c.prescriptionsCount && c.prescriptionsCount > 0) || c.status === 'COMPLETED' || c.status === 'TERMINEE');
+      if (currentDocs.length === 0 && consultsWithPrescriptions.length > 0) {
+        for (const c of consultsWithPrescriptions) {
+          try {
+            await apiService.generatePrescriptionPdf(c.id);
+          } catch {
+            // Ignore background errors
+          }
+        }
+        currentDocs = await apiService.getPatientDocuments(patient.id);
+      }
+
+      setPatientDocuments(currentDocs);
+    } catch (err) {
+      console.error('Erreur chargement dossier médical complet:', err);
+    } finally {
+      setIsLoadingRecord(false);
+    }
+  };
 
   useEffect(() => {
     if (openPatient) {
-      setIsLoadingRecord(true);
-      Promise.all([
-        apiService.getPatientMedicalRecord(openPatient.id),
-        apiService.getPatientDocuments(openPatient.id)
-      ]).then(async ([record, docs]) => {
-        setMedicalRecord(record);
-        let currentDocs = docs || [];
-
-        let consults: any[] = (record?.consultations as any[]) || [];
-        if (!consults || consults.length === 0) {
-          const allConsults = await apiService.getConsultations();
-          consults = allConsults.filter(c => c.patientId === openPatient.id || c.patientMatricule === openPatient.matricule);
-        }
-        setPatientConsultations(consults);
-
-        // Génération automatique en arrière-plan des ordonnances pour les consultations terminées ou avec prescriptions
-        const consultsWithPrescriptions = consults.filter((c: any) => (c.prescriptions && c.prescriptions.length > 0) || (c.prescriptionsCount && c.prescriptionsCount > 0) || c.status === 'COMPLETED' || c.status === 'TERMINEE');
-        if (currentDocs.length === 0 && consultsWithPrescriptions.length > 0) {
-          for (const c of consultsWithPrescriptions) {
-            try {
-              await apiService.generatePrescriptionPdf(c.id);
-            } catch (e) {
-              // Ignore background errors
-            }
-          }
-          currentDocs = await apiService.getPatientDocuments(openPatient.id);
-        }
-
-        setPatientDocuments(currentDocs);
-      }).catch(err => {
-        console.error('Erreur chargement dossier médical complet:', err);
-      }).finally(() => {
-        setIsLoadingRecord(false);
-      });
+      loadOpenPatientDetails(openPatient);
     } else {
       setMedicalRecord(null);
       setPatientConsultations([]);
@@ -112,10 +142,71 @@ export const PatientsPage: React.FC = () => {
     }
   }, [openPatient]);
 
+  const handleAddPatientSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!addForm.matricule || !addForm.firstName || !addForm.lastName || !addForm.department || !addForm.jobTitle) {
+      showToast('Champs requis', 'Veuillez remplir les champs obligatoires.', 'error');
+      return;
+    }
+    setIsSubmitting(true);
+    const res = await apiService.savePatient(addForm);
+    setIsSubmitting(false);
+
+    if (res.success) {
+      showToast('Dossier créé', 'Le nouveau patient a été enregistré avec succès.', 'success');
+      setShowAddModal(false);
+      setAddForm({
+        matricule: '',
+        firstName: '',
+        lastName: '',
+        email: '',
+        phone: '',
+        gender: 'M',
+        department: '',
+        jobTitle: '',
+        bloodGroup: '',
+        medicalHistory: ''
+      });
+      loadPatients();
+    } else {
+      showToast('Erreur', res.error || "Impossible d'ajouter ce patient.", 'error');
+    }
+  };
+
+  const handleAddAllergy = async () => {
+    if (!openPatient || !newAllergySubstance.trim()) return;
+    const res = await apiService.addPatientAllergy(openPatient.id, {
+      allergyType: newAllergyType,
+      substance: newAllergySubstance.trim(),
+      severity: newAllergySeverity
+    });
+    if (res.success) {
+      showToast('Allergie ajoutée', `${newAllergySubstance} a été enregistrée.`, 'success');
+      setNewAllergySubstance('');
+      loadOpenPatientDetails(openPatient);
+      loadPatients();
+    } else {
+      showToast('Erreur', res.error || "Impossible d'ajouter l'allergie.", 'error');
+    }
+  };
+
+  const handleDeleteAllergy = async (allergyId: string) => {
+    if (!openPatient) return;
+    const ok = await apiService.deletePatientAllergy(openPatient.id, allergyId);
+    if (ok) {
+      showToast('Allergie retirée', "L'allergie a été supprimée du dossier.", 'info');
+      loadOpenPatientDetails(openPatient);
+      loadPatients();
+    } else {
+      showToast('Erreur', "Impossible de supprimer l'allergie.", 'error');
+    }
+  };
+
   const filteredPatients = patients.filter(p =>
     (p.firstName?.toLowerCase() || '').includes(search.toLowerCase()) ||
     (p.lastName?.toLowerCase() || '').includes(search.toLowerCase()) ||
-    (p.matricule?.toLowerCase() || '').includes(search.toLowerCase())
+    (p.matricule?.toLowerCase() || '').includes(search.toLowerCase()) ||
+    (p.department?.toLowerCase() || '').includes(search.toLowerCase())
   );
 
   return (
@@ -130,20 +221,30 @@ export const PatientsPage: React.FC = () => {
             <p className="text-slate-500 mt-1 text-sm">Gérez les dossiers médicaux du personnel BCRG et ayants-droit.</p>
           </div>
         </div>
+        <button
+          onClick={() => setShowAddModal(true)}
+          className="flex items-center gap-2 bg-[#1b3b31] hover:bg-[#142c24] text-white px-5 py-2.5 rounded-xl font-medium transition-colors shadow-sm"
+        >
+          <UserPlus className="w-5 h-5" />
+          <span>Nouveau Patient</span>
+        </button>
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100">
-        <div className="p-4 border-b border-slate-100 flex items-center gap-4 rounded-t-2xl bg-white">
+        <div className="p-4 border-b border-slate-100 flex items-center justify-between gap-4 rounded-t-2xl bg-white">
           <div className="relative flex-1 max-w-md">
             <Search className="w-5 h-5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="Rechercher par nom, matricule..."
+              placeholder="Rechercher par nom, matricule, direction..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 focus:bg-white focus:border-sky-500 focus:ring-2 focus:ring-sky-200 rounded-lg outline-none text-sm transition-all"
             />
           </div>
+          <span className="text-xs font-medium text-slate-500">
+            {filteredPatients.length} dossier{filteredPatients.length > 1 ? 's' : ''}
+          </span>
         </div>
 
         <div className="overflow-x-auto min-h-[360px] pb-32">
@@ -152,7 +253,7 @@ export const PatientsPage: React.FC = () => {
               <tr className="bg-slate-50/50 border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500">
                 <th className="px-6 py-4 font-medium">Matricule</th>
                 <th className="px-6 py-4 font-medium">Patient</th>
-                <th className="px-6 py-4 font-medium">Poste</th>
+                <th className="px-6 py-4 font-medium">Poste / Direction</th>
                 <th className="px-6 py-4 font-medium text-right">Actions</th>
               </tr>
             </thead>
@@ -173,7 +274,8 @@ export const PatientsPage: React.FC = () => {
                       <div className="text-xs text-slate-400">{patient.email || `${patient.matricule}@bcrg-guinee.org`}</div>
                     </td>
                     <td className="px-6 py-4 text-slate-600">
-                      <span>{patient.jobTitle || patient.department || '-'}</span>
+                      <div className="font-medium text-slate-700">{patient.jobTitle || '-'}</div>
+                      <div className="text-xs text-slate-400">{patient.department || ''}</div>
                     </td>
                     <td className="px-6 py-4 text-right" onClick={(e) => e.stopPropagation()}>
                       <div className="relative inline-block text-left">
@@ -214,7 +316,7 @@ export const PatientsPage: React.FC = () => {
               })}
               {filteredPatients.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-6 py-12 text-center text-slate-500">
+                  <td colSpan={4} className="px-6 py-12 text-center text-slate-500">
                     Aucun patient trouvé correspondant à votre recherche.
                   </td>
                 </tr>
@@ -223,6 +325,148 @@ export const PatientsPage: React.FC = () => {
           </table>
         </div>
       </div>
+
+      {/* Add Patient Modal */}
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto animate-in zoom-in-95 duration-200">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-800">Nouveau Dossier Patient</h2>
+              <button onClick={() => setShowAddModal(false)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleAddPatientSubmit}>
+              <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Matricule (chiffres, min 4) *</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: 1042"
+                    value={addForm.matricule}
+                    onChange={e => setAddForm(f => ({ ...f, matricule: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Genre *</label>
+                  <select
+                    value={addForm.gender}
+                    onChange={e => setAddForm(f => ({ ...f, gender: e.target.value as 'M' | 'F' }))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none"
+                  >
+                    <option value="M">Masculin</option>
+                    <option value="F">Féminin</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Prénom *</label>
+                  <input
+                    type="text"
+                    placeholder="Prénom"
+                    value={addForm.firstName}
+                    onChange={e => setAddForm(f => ({ ...f, firstName: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Nom *</label>
+                  <input
+                    type="text"
+                    placeholder="Nom de famille"
+                    value={addForm.lastName}
+                    onChange={e => setAddForm(f => ({ ...f, lastName: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Email professionnel</label>
+                  <input
+                    type="email"
+                    placeholder="prenom.nom@bcrg-guinee.org"
+                    value={addForm.email}
+                    onChange={e => setAddForm(f => ({ ...f, email: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Téléphone</label>
+                  <input
+                    type="tel"
+                    placeholder="620000000"
+                    value={addForm.phone}
+                    onChange={e => setAddForm(f => ({ ...f, phone: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Direction / Département *</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Direction Informatique"
+                    value={addForm.department}
+                    onChange={e => setAddForm(f => ({ ...f, department: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Poste *</label>
+                  <input
+                    type="text"
+                    placeholder="Intitulé du poste"
+                    value={addForm.jobTitle}
+                    onChange={e => setAddForm(f => ({ ...f, jobTitle: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Groupe sanguin</label>
+                  <select
+                    value={addForm.bloodGroup}
+                    onChange={e => setAddForm(f => ({ ...f, bloodGroup: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none"
+                  >
+                    <option value="">Non renseigné</option>
+                    <option value="A+">A+</option>
+                    <option value="A-">A-</option>
+                    <option value="B+">B+</option>
+                    <option value="B-">B-</option>
+                    <option value="AB+">AB+</option>
+                    <option value="AB-">AB-</option>
+                    <option value="O+">O+</option>
+                    <option value="O-">O-</option>
+                  </select>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Antécédents médicaux / Pathologies chroniques</label>
+                  <textarea
+                    rows={2}
+                    placeholder="Ex: Diabète type 2, HTA..."
+                    value={addForm.medicalHistory}
+                    onChange={e => setAddForm(f => ({ ...f, medicalHistory: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none resize-none"
+                  />
+                </div>
+              </div>
+              <div className="p-4 border-t border-slate-100 flex justify-end gap-2">
+                <button type="button" onClick={() => setShowAddModal(false)} className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">Annuler</button>
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="px-4 py-2 text-sm font-medium bg-[#1b3b31] text-white rounded-lg hover:bg-[#142c24] transition-colors disabled:opacity-50"
+                >
+                  {isSubmitting ? 'Enregistrement...' : 'Créer le dossier'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Patient Detail Panel */}
       {openPatient && (
@@ -325,7 +569,7 @@ export const PatientsPage: React.FC = () => {
                           <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Téléphone</p>
                           <p className="text-sm font-bold text-slate-800">{medicalRecord?.user?.phone || openPatient.phone || '-'}</p>
                         </div>
-                        <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
+                        <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 col-span-2">
                           <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Email</p>
                           <p className="text-sm font-bold text-slate-800 truncate">{medicalRecord?.user?.email || openPatient.email || '-'}</p>
                         </div>
@@ -343,28 +587,69 @@ export const PatientsPage: React.FC = () => {
                         </div>
                       )}
 
-                      {/* Allergies */}
-                      {((medicalRecord?.allergies && medicalRecord.allergies.length > 0) || (openPatient.allergies && openPatient.allergies.length > 0)) && (
-                        <div className="bg-rose-50 border border-rose-100 rounded-xl p-4">
-                          <p className="text-xs font-medium text-rose-500 uppercase tracking-wider mb-2">Allergies déclarées</p>
-                          <div className="flex flex-wrap gap-2">
-                            {medicalRecord?.allergies && medicalRecord.allergies.length > 0 ? (
-                              medicalRecord.allergies.map(a => (
-                                <div key={a.id} className="flex items-center gap-1.5 px-3 py-1 bg-white border border-rose-200 rounded-lg text-xs">
-                                  <span className="font-bold text-rose-800">{a.substance}</span>
-                                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${a.severity === 'SEVERE' ? 'bg-red-100 text-red-700' : 'bg-rose-100 text-rose-700'
-                                    }`}>{a.severity}</span>
-                                  {a.reactionDetails && <span className="text-slate-500 italic">({a.reactionDetails})</span>}
-                                </div>
-                              ))
-                            ) : (
-                              openPatient.allergies?.map((a, i) => (
-                                <span key={i} className="px-3 py-1 bg-rose-100 text-rose-700 text-xs font-medium rounded-full">{a}</span>
-                              ))
-                            )}
-                          </div>
+                      {/* Allergies + CRUD */}
+                      <div className="bg-rose-50 border border-rose-100 rounded-xl p-4 space-y-3">
+                        <p className="text-xs font-bold text-rose-600 uppercase tracking-wider">Allergies déclarées</p>
+                        <div className="flex flex-wrap gap-2">
+                          {medicalRecord?.allergies && medicalRecord.allergies.length > 0 ? (
+                            medicalRecord.allergies.map(a => (
+                              <div key={a.id} className="flex items-center gap-1.5 px-3 py-1 bg-white border border-rose-200 rounded-lg text-xs">
+                                <span className="font-bold text-rose-800">{a.substance}</span>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${a.severity === 'SEVERE' ? 'bg-red-100 text-red-700' : 'bg-rose-100 text-rose-700'
+                                  }`}>{a.severity}</span>
+                                {a.reactionDetails && <span className="text-slate-500 italic">({a.reactionDetails})</span>}
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteAllergy(a.id)}
+                                  className="ml-1 text-rose-400 hover:text-rose-700"
+                                  title="Retirer cette allergie"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            ))
+                          ) : (
+                            <span className="text-xs text-slate-500 italic">Aucune allergie déclarée.</span>
+                          )}
                         </div>
-                      )}
+
+                        <div className="pt-2 border-t border-rose-200/60 flex flex-wrap gap-2 items-center">
+                          <input
+                            type="text"
+                            value={newAllergySubstance}
+                            onChange={(e) => setNewAllergySubstance(e.target.value)}
+                            placeholder="Substance (ex: Pénicilline)..."
+                            className="flex-1 min-w-[160px] px-3 py-1.5 bg-white border border-rose-200 rounded-lg text-xs outline-none focus:border-rose-400"
+                          />
+                          <select
+                            value={newAllergyType}
+                            onChange={(e) => setNewAllergyType(e.target.value as any)}
+                            className="px-2.5 py-1.5 bg-white border border-rose-200 rounded-lg text-xs outline-none"
+                          >
+                            <option value="DRUG">Médicament</option>
+                            <option value="FOOD">Alimentaire</option>
+                            <option value="OCCUPATIONAL">Professionnelle</option>
+                            <option value="OTHER">Autre</option>
+                          </select>
+                          <select
+                            value={newAllergySeverity}
+                            onChange={(e) => setNewAllergySeverity(e.target.value as any)}
+                            className="px-2.5 py-1.5 bg-white border border-rose-200 rounded-lg text-xs outline-none"
+                          >
+                            <option value="MILD">Légère</option>
+                            <option value="MODERATE">Modérée</option>
+                            <option value="SEVERE">Sévère</option>
+                          </select>
+                          <button
+                            type="button"
+                            onClick={handleAddAllergy}
+                            disabled={!newAllergySubstance.trim()}
+                            className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition-colors"
+                          >
+                            + Ajouter
+                          </button>
+                        </div>
+                      </div>
 
                       {/* Antécédents / Histoire médicale */}
                       {(medicalRecord?.medicalHistory || (openPatient.chronicConditions && openPatient.chronicConditions.length > 0)) && (
@@ -488,11 +773,10 @@ export const PatientsPage: React.FC = () => {
         </div>
       )}
 
-      {/* In-app Document Preview Modal (No external tab) */}
+      {/* In-app Document Preview Modal */}
       {previewDoc && previewDoc.isOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden max-h-[92vh] animate-in zoom-in-95 duration-200">
-            {/* Modal Header */}
             <div className="px-6 py-4 bg-[#1b3b31] text-white flex items-center justify-between shrink-0">
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center text-emerald-400">
@@ -524,7 +808,6 @@ export const PatientsPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Modal Body */}
             <div className="flex-1 bg-slate-100 min-h-[520px] flex items-center justify-center p-0 relative overflow-hidden">
               {previewDoc.isLoading && (
                 <div className="text-center py-16">

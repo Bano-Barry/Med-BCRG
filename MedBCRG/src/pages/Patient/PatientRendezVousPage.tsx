@@ -1,40 +1,72 @@
 import React, { useState, useEffect } from 'react';
-import { CalendarDays, Clock, User, ChevronLeft, ChevronRight, Check, X, CalendarIcon, ArrowLeft, Info, Stethoscope, Loader2 } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, Check, Info, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { apiService } from '../../services/api';
+import { AvailableDayItem } from '../../types';
+import { useNotifications } from '../../hooks/useNotifications';
 
 export const PatientRendezVousPage: React.FC = () => {
   const navigate = useNavigate();
+  const { showToast } = useNotifications();
   const [currentDatePivot, setCurrentDatePivot] = useState<Date>(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedTime, setSelectedTime] = useState<string>('09:00');
   const [availableSlots, setAvailableSlots] = useState<string[]>([]);
+  const [monthDaysMap, setMonthDaysMap] = useState<Record<string, AvailableDayItem>>({});
   const [isLoadingSlots, setIsLoadingSlots] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [selectedType, setSelectedType] = useState('Consultation Générale');
   const [reason, setReason] = useState('');
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
 
+  const toIsoDateLocal = (d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  useEffect(() => {
+    const y = currentDatePivot.getFullYear();
+    const m = String(currentDatePivot.getMonth() + 1).padStart(2, '0');
+    const monthStr = `${y}-${m}`;
+    apiService.getAvailableAppointmentDays(monthStr).then(res => {
+      if (res && Array.isArray(res.days)) {
+        const map: Record<string, AvailableDayItem> = {};
+        res.days.forEach(item => {
+          map[item.date] = item;
+        });
+        setMonthDaysMap(map);
+      } else {
+        setMonthDaysMap({});
+      }
+    }).catch(() => {
+      setMonthDaysMap({});
+    });
+  }, [currentDatePivot]);
+
   useEffect(() => {
     if (!selectedDate) {
       setAvailableSlots([]);
       return;
     }
-    const dateStr = selectedDate.toISOString().split('T')[0];
+    const dateStr = toIsoDateLocal(selectedDate);
     setIsLoadingSlots(true);
     apiService.getAvailableAppointmentSlots(dateStr)
       .then(res => {
-        if (res?.availableSlots && res.availableSlots.length > 0) {
+        if (res && Array.isArray(res.availableSlots)) {
           setAvailableSlots(res.availableSlots);
-          setSelectedTime(res.availableSlots[0]);
+          if (res.availableSlots.length > 0) {
+            setSelectedTime(res.availableSlots[0]);
+          }
         } else {
-          const defaultSlots = ['08:30', '09:00', '09:30', '10:00', '10:30', '11:00', '14:00', '14:30', '15:00', '15:30'];
+          const defaultSlots = ['08:00', '08:30', '09:00', '09:30', '10:00', '10:30', '11:00', '11:30', '14:00', '14:30', '15:00', '15:30', '16:00', '16:30'];
           setAvailableSlots(defaultSlots);
           setSelectedTime('09:00');
         }
       })
       .catch(() => {
-        const defaultSlots = ['08:30', '09:00', '09:30', '10:00', '10:30', '11:00', '14:00', '14:30', '15:00', '15:30'];
+        const defaultSlots = ['08:00', '08:30', '09:00', '09:30', '10:00', '10:30', '11:00', '11:30', '14:00', '14:30', '15:00', '15:30', '16:00', '16:30'];
         setAvailableSlots(defaultSlots);
         setSelectedTime('09:00');
       })
@@ -60,7 +92,7 @@ export const PatientRendezVousPage: React.FC = () => {
     if (!selectedDate) return;
     setIsSubmitting(true);
 
-    const dateStr = selectedDate.toISOString().split('T')[0];
+    const dateStr = toIsoDateLocal(selectedDate);
     let typeCode = 'GENERAL';
     if (selectedType.includes('embauche') || selectedType.includes('Annuelle')) typeCode = 'PERIODIC';
     if (selectedType.includes('Spécialisée')) typeCode = 'GENERAL';
@@ -73,46 +105,15 @@ export const PatientRendezVousPage: React.FC = () => {
         type: typeCode,
       });
 
-      if (!res.success) {
-        const dateTimeString = new Date(
-          selectedDate.getFullYear(),
-          selectedDate.getMonth(),
-          selectedDate.getDate(),
-          parseInt(selectedTime.split(':')[0]),
-          parseInt(selectedTime.split(':')[1])
-        ).toISOString();
-
-        apiService.addAppointment({
-          patientId: 'PAT-002',
-          patientName: 'Employé Patient',
-          patientMatricule: '1002',
-          doctorName: 'Dr. Ousmane Bangoura',
-          dateTime: dateTimeString,
-          reason: `${selectedType} - ${reason}`,
-          status: 'PROGRAMME'
-        });
+      if (res.success) {
+        setIsConfirmModalOpen(true);
+      } else {
+        showToast('Créneau indisponible', res.error || 'Impossible d\'enregistrer le rendez-vous sur ce créneau.', 'error');
       }
-    } catch {
-      const dateTimeString = new Date(
-        selectedDate.getFullYear(),
-        selectedDate.getMonth(),
-        selectedDate.getDate(),
-        parseInt(selectedTime.split(':')[0]),
-        parseInt(selectedTime.split(':')[1])
-      ).toISOString();
-
-      apiService.addAppointment({
-        patientId: 'PAT-002',
-        patientName: 'Employé Patient',
-        patientMatricule: '1002',
-        doctorName: 'Dr. Ousmane Bangoura',
-        dateTime: dateTimeString,
-        reason: `${selectedType} - ${reason}`,
-        status: 'PROGRAMME'
-      });
+    } catch (err: any) {
+      showToast('Erreur', err.message || 'Erreur lors de la demande de rendez-vous.', 'error');
     } finally {
       setIsSubmitting(false);
-      setIsConfirmModalOpen(true);
     }
   };
 
@@ -132,12 +133,16 @@ export const PatientRendezVousPage: React.FC = () => {
 
     for (let i = 1; i <= lastDay.getDate(); i++) {
       const date = new Date(year, month, i);
+      const dateStr = toIsoDateLocal(date);
+      const dayAvailability = monthDaysMap[dateStr];
       const isToday = date.toDateString() === today.toDateString();
       const isSelected = selectedDate?.toDateString() === date.toDateString();
       const isPast = date < new Date(today.getFullYear(), today.getMonth(), today.getDate());
       const isWeekend = date.getDay() === 0 || date.getDay() === 6;
 
-      const isSelectable = !isPast && !isWeekend;
+      const isSelectable = dayAvailability
+        ? dayAvailability.isAvailable && !isPast && !isWeekend
+        : !isPast && !isWeekend;
 
       days.push(
         <div
@@ -155,7 +160,12 @@ export const PatientRendezVousPage: React.FC = () => {
             {i}
           </span>
           {isSelectable && (
-            <span className="text-[10px] text-emerald-600 font-medium mt-1">Dispos</span>
+            <span className="text-[10px] text-emerald-600 font-medium mt-1">
+              {dayAvailability ? `${dayAvailability.availableSlotsCount} créneaux` : 'Dispos'}
+            </span>
+          )}
+          {!isPast && !isWeekend && dayAvailability && !dayAvailability.isAvailable && (
+            <span className="text-[10px] text-rose-500 font-medium mt-1">Complet</span>
           )}
         </div>
       );
@@ -238,7 +248,7 @@ export const PatientRendezVousPage: React.FC = () => {
               </div>
 
               <div className="p-6 border-b border-slate-100">
-                <label className="block text-sm font-semibold text-slate-700 mb-3">Créneaux horaires disponibles</label>
+                <label className="block text-sm font-semibold text-slate-700 mb-3">Créneaux horaires disponibles (08:00 - 17:00)</label>
                 
                 {isLoadingSlots ? (
                   <div className="flex items-center justify-center py-6 gap-2 text-slate-500 text-sm">
@@ -247,10 +257,10 @@ export const PatientRendezVousPage: React.FC = () => {
                   </div>
                 ) : availableSlots.length === 0 ? (
                   <p className="text-sm text-amber-600 bg-amber-50 p-3 rounded-lg border border-amber-100">
-                    Aucun créneau ouvert pour cette date. Vous pouvez saisir une heure manuellement ci-dessous.
+                    Aucun créneau ouvert pour cette date. Veuillez choisir un autre jour.
                   </p>
                 ) : (
-                  <div className="grid grid-cols-3 gap-2 mb-4">
+                  <div className="grid grid-cols-3 gap-2 mb-2">
                     {availableSlots.map(slot => (
                       <button
                         key={slot}
@@ -267,16 +277,6 @@ export const PatientRendezVousPage: React.FC = () => {
                     ))}
                   </div>
                 )}
-
-                <div className="mt-3 flex items-center gap-3">
-                  <Clock className="w-5 h-5 text-slate-400 shrink-0" />
-                  <input
-                    type="time"
-                    value={selectedTime}
-                    onChange={(e) => setSelectedTime(e.target.value)}
-                    className="flex-1 p-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#1b3b31] bg-slate-50 text-sm font-medium"
-                  />
-                </div>
               </div>
 
               <form className="p-6 space-y-5" onSubmit={handleSubmit}>
@@ -309,7 +309,7 @@ export const PatientRendezVousPage: React.FC = () => {
                 <div className="pt-4 border-t border-slate-100">
                   <button
                     type="submit"
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || availableSlots.length === 0}
                     className="w-full py-3 text-sm font-bold text-white bg-[#1b3b31] hover:bg-[#122821] disabled:opacity-60 rounded-xl transition-colors shadow-sm flex items-center justify-center gap-2"
                   >
                     {isSubmitting ? (

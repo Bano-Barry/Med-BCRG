@@ -10,6 +10,7 @@ export interface User {
   matricule?: string;
   phone?: string;
   jobTitle?: string;
+  isFirstLogin?: boolean;
 }
 
 export type PatientCategory = 'AGENT_BCRG' | 'AYANT_DROIT' | 'RETRAITE' | 'STAGIAIRE';
@@ -27,6 +28,7 @@ export interface Patient {
   department?: string; // ex: Direction Informatique, Caisse Générale
   jobTitle?: string;
   bloodGroup?: string;
+  medicalHistory?: string;
   allergies?: string[];
   chronicConditions?: string[];
   createdAt: string;
@@ -39,6 +41,7 @@ export interface VitalSigns {
   weight?: number; // kg
   height?: number; // cm
   spo2?: number; // %
+  bloodGroup?: string;
 }
 
 export interface PrescriptionItem {
@@ -114,12 +117,47 @@ export interface VisitPeriodicitySettings {
 
 export interface DueEmployeeItem {
   id: string;
+  patientId?: string;
   matricule: string;
   fullName: string;
   department?: string;
-  lastVisitDate?: string;
+  jobTitle?: string;
+  isSmr?: boolean;
+  smrReason?: string | null;
+  frequencyMonths?: number;
+  lastVisitDate?: string | null;
+  lastVisitFormatted?: string;
   nextDueDate?: string;
+  nextDueDateFormatted?: string;
+  daysRemaining?: number;
   status: 'A_JOUR' | 'BIENTOT_DUE' | 'EN_RETARD';
+  statusLabel?: string;
+}
+
+export interface DueEmployeesSummary {
+  totalEmployees: number;
+  upToDateCount: number;
+  dueSoonCount: number;
+  overdueCount: number;
+  smrCount: number;
+  coverageRatePercent: number;
+  employees: DueEmployeeItem[];
+}
+
+export interface AvailableDayItem {
+  date: string;
+  dayNumber: number;
+  dayOfWeek: number;
+  dayName: string;
+  isPast: boolean;
+  isWeekend: boolean;
+  isAvailable: boolean;
+  availableSlotsCount: number;
+}
+
+export interface AvailableDaysResponse {
+  month: string;
+  days: AvailableDayItem[];
 }
 
 export interface AvailableSlotsResponse {
@@ -130,7 +168,6 @@ export interface AvailableSlotsResponse {
   availableSlots: string[];
   occupiedSlots: string[];
 }
-
 
 export interface DashboardStats {
   consultationsToday: number;

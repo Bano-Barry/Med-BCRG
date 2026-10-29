@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { CalendarDays, Bell, Activity, Plus, Clock, FileText, MoreHorizontal, X, Eye, Download, ShieldCheck, RefreshCw, Upload } from 'lucide-react';
+import { CalendarDays, Bell, Activity, Clock, FileText, X, Eye, Download, ShieldCheck } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { formatDate } from '../../utils/formatters';
 import { apiService, viewDocumentBlob, downloadDocumentBlob } from '../../services/api';
@@ -9,7 +9,6 @@ import { useNotifications } from '../../hooks/useNotifications';
 
 export const PatientPortalPage: React.FC = () => {
   const { showToast } = useNotifications();
-  const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [openDocument, setOpenDocument] = useState<MedicalDocument | null>(null);
   const [isAllDocumentsOpen, setIsAllDocumentsOpen] = useState(false);
   const [isAppointmentPanelOpen, setIsAppointmentPanelOpen] = useState(false);
@@ -26,14 +25,9 @@ export const PatientPortalPage: React.FC = () => {
   const loadPatientAppointments = async () => {
     try {
       const apts = await apiService.getMyPatientAppointments();
-      if (apts && apts.length > 0) {
-        setAppointments(apts);
-      } else {
-        const local = apiService.getAppointments();
-        setAppointments(local);
-      }
+      setAppointments(apts || []);
     } catch {
-      setAppointments(apiService.getAppointments());
+      setAppointments([]);
     }
   };
 
@@ -41,10 +35,8 @@ export const PatientPortalPage: React.FC = () => {
     if (location.pathname === '/patient/renouvellement') {
       setIsRenewPrescriptionPanelOpen(true);
     }
-    // Fetch patient appointments from backend API
     loadPatientAppointments();
 
-    // Fetch real patient vitals and documents from backend
     apiService.getMyVitals().then(res => {
       if (res) setVitalsData(res);
     });
@@ -58,6 +50,9 @@ export const PatientPortalPage: React.FC = () => {
     setIsRenewPrescriptionPanelOpen(false);
     if (location.pathname !== '/patient') navigate('/patient');
   };
+
+  const upcomingAppointments = appointments.filter(a => a.status !== 'ANNULE' && a.status !== 'TERMINE');
+  const nextAppointment = upcomingAppointments[0] || appointments[0] || null;
 
   return (
     <div className="space-y-6 relative animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -85,13 +80,38 @@ export const PatientPortalPage: React.FC = () => {
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Rappels / Notifications */}
-        <div className="bg-slate-50 border border-slate-100 rounded-2xl p-5 md:col-span-3 flex items-start gap-4">
-          <div className="p-3 bg-slate-100 rounded-lg text-slate-500 shrink-0">
+        <div className={`border rounded-2xl p-5 md:col-span-3 flex items-start gap-4 ${
+          upcomingAppointments.length > 0
+            ? 'bg-emerald-50/70 border-emerald-200'
+            : 'bg-slate-50 border-slate-100'
+        }`}>
+          <div className={`p-3 rounded-lg shrink-0 ${
+            upcomingAppointments.length > 0
+              ? 'bg-emerald-100 text-emerald-700'
+              : 'bg-slate-100 text-slate-500'
+          }`}>
             <Bell className="w-6 h-6" />
           </div>
           <div>
-            <h3 className="font-semibold text-slate-600">Aucune notification</h3>
-            <p className="text-sm text-slate-500 mt-1">Vous n'avez pas de nouveaux rappels ou messages.</p>
+            {upcomingAppointments.length > 0 ? (
+              <>
+                <h3 className="font-semibold text-emerald-900">
+                  Rappel : Rendez-vous {upcomingAppointments[0].status === 'CONFIRME' ? 'confirmé' : 'programmé'}
+                </h3>
+                <p className="text-sm text-emerald-700 mt-1">
+                  Votre prochain rendez-vous ({upcomingAppointments[0].reason.split(' - ')[0]}) est prévu le{' '}
+                  <span className="font-semibold">
+                    {new Date(upcomingAppointments[0].dateTime).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })} à{' '}
+                    {new Date(upcomingAppointments[0].dateTime).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                  </span>.
+                </p>
+              </>
+            ) : (
+              <>
+                <h3 className="font-semibold text-slate-600">Aucune notification</h3>
+                <p className="text-sm text-slate-500 mt-1">Vous n'avez pas de nouveaux rappels ou rendez-vous en attente.</p>
+              </>
+            )}
           </div>
         </div>
 
@@ -102,31 +122,31 @@ export const PatientPortalPage: React.FC = () => {
             <h2 className="font-semibold text-slate-800">Prochain Rendez-vous</h2>
           </div>
 
-          {appointments.length > 0 ? (
+          {nextAppointment ? (
             <div className="flex flex-col sm:flex-row gap-4 items-center sm:items-start p-4 bg-slate-50 rounded-lg">
               <div className="bg-white border border-slate-200 rounded-lg p-3 text-center min-w-[80px]">
                 <div className="text-xs font-bold text-red-500 uppercase">
-                  {new Date(appointments[0].dateTime).toLocaleDateString('fr-FR', { month: 'short' })}
+                  {new Date(nextAppointment.dateTime).toLocaleDateString('fr-FR', { month: 'short' })}
                 </div>
                 <div className="text-2xl font-extrabold text-slate-800">
-                  {new Date(appointments[0].dateTime).getDate()}
+                  {new Date(nextAppointment.dateTime).getDate()}
                 </div>
               </div>
               <div className="flex-1 text-center sm:text-left">
                 <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-1">
-                  <h3 className="font-semibold text-slate-800">{appointments[0].reason.split(' - ')[0]}</h3>
+                  <h3 className="font-semibold text-slate-800">{nextAppointment.reason.split(' - ')[0]}</h3>
                   <Badge variant={
-                    appointments[0].status === 'PROGRAMME' ? 'warning' :
-                      appointments[0].status === 'CONFIRME' ? 'success' :
-                        appointments[0].status === 'ANNULE' ? 'danger' : 'default'
+                    nextAppointment.status === 'PROGRAMME' ? 'warning' :
+                      nextAppointment.status === 'CONFIRME' ? 'success' :
+                        nextAppointment.status === 'ANNULE' ? 'danger' : 'default'
                   }>
-                    {appointments[0].status}
+                    {nextAppointment.status}
                   </Badge>
                 </div>
                 <p className="text-sm text-slate-500 mt-1 flex items-center justify-center sm:justify-start gap-1">
                   <Clock className="w-4 h-4" />
-                  {new Date(appointments[0].dateTime).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-                  - {appointments[0].doctorName}
+                  {new Date(nextAppointment.dateTime).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                  - {nextAppointment.doctorName}
                 </p>
               </div>
               <button
@@ -236,7 +256,6 @@ export const PatientPortalPage: React.FC = () => {
       {openDocument && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-stretch justify-end">
           <div className="w-full max-w-md bg-white shadow-2xl flex flex-col animate-in slide-in-from-right-8 duration-300">
-            {/* Header */}
             <div className="p-6 bg-[#1b3b31] text-white flex justify-between items-start shrink-0">
               <div>
                 <div className="flex items-center gap-3 mb-2">
@@ -254,7 +273,6 @@ export const PatientPortalPage: React.FC = () => {
               </button>
             </div>
 
-            {/* Content */}
             <div className="flex-1 overflow-y-auto p-6 flex flex-col items-center justify-center text-center text-slate-500">
               <FileText className="w-16 h-16 text-slate-200 mb-4" />
               <p className="mb-2 font-medium text-slate-700">Aperçu du document PDF</p>
@@ -288,7 +306,6 @@ export const PatientPortalPage: React.FC = () => {
       {isAllDocumentsOpen && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-stretch justify-end">
           <div className="w-full max-w-md bg-white shadow-2xl flex flex-col animate-in slide-in-from-right-8 duration-300">
-            {/* Header */}
             <div className="p-6 bg-[#1b3b31] text-white flex justify-between items-start shrink-0">
               <div>
                 <h2 className="text-lg font-bold">Tous les documents</h2>
@@ -299,7 +316,6 @@ export const PatientPortalPage: React.FC = () => {
               </button>
             </div>
 
-            {/* Content */}
             <div className="flex-1 overflow-y-auto p-6 bg-slate-50">
               <div className="bg-white border border-slate-200 rounded-xl divide-y divide-slate-100">
                 {documents.map((doc) => (
@@ -351,7 +367,6 @@ export const PatientPortalPage: React.FC = () => {
       {isRenewPrescriptionPanelOpen && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-stretch justify-end">
           <div className="w-full max-w-md bg-white shadow-2xl flex flex-col animate-in slide-in-from-right-8 duration-300">
-            {/* Header */}
             <div className="p-6 bg-[#1b3b31] text-white flex justify-between items-start shrink-0">
               <div>
                 <h2 className="text-lg font-bold">Renouvellement d'ordonnance</h2>
@@ -362,7 +377,6 @@ export const PatientPortalPage: React.FC = () => {
               </button>
             </div>
 
-            {/* Form Content */}
             <div className="flex-1 overflow-y-auto p-6 space-y-4">
               <div className="bg-sky-50 border border-sky-100 rounded-lg p-4 mb-4">
                 <p className="text-sm text-sky-800">
@@ -383,7 +397,6 @@ export const PatientPortalPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Footer */}
             <div className="p-6 border-t border-slate-100 flex justify-end gap-3 shrink-0 bg-slate-50">
               <button
                 onClick={handleCloseRenew}
@@ -409,7 +422,6 @@ export const PatientPortalPage: React.FC = () => {
       {isAppointmentPanelOpen && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-stretch justify-end">
           <div className="w-full max-w-md bg-white shadow-2xl flex flex-col animate-in slide-in-from-right-8 duration-300">
-            {/* Header */}
             <div className="p-6 bg-[#1b3b31] text-white flex justify-between items-start shrink-0">
               <div>
                 <h2 className="text-lg font-bold">Mes Rendez-vous</h2>
@@ -420,7 +432,6 @@ export const PatientPortalPage: React.FC = () => {
               </button>
             </div>
 
-            {/* Content */}
             <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50">
               {appointments.length === 0 ? (
                 <div className="text-center py-12">
@@ -514,11 +525,11 @@ export const PatientPortalPage: React.FC = () => {
               </button>
               <button
                 onClick={async () => {
-                  try {
-                    await apiService.cancelPatientAppointment(appointmentToCancel, "Annulé par le patient");
+                  const ok = await apiService.cancelPatientAppointment(appointmentToCancel, "Annulé par le patient");
+                  if (ok) {
                     showToast('Rendez-vous annulé', 'Votre rendez-vous a bien été annulé.', 'info');
-                  } catch (e) {
-                    apiService.updateAppointment(appointmentToCancel, { status: 'ANNULE' });
+                  } else {
+                    showToast('Erreur', 'Impossible d\'annuler ce rendez-vous.', 'error');
                   }
                   await loadPatientAppointments();
                   setAppointmentToCancel(null);

@@ -1,13 +1,26 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { CalendarDays, Clock, User, ChevronLeft, ChevronRight, Check, X, CalendarIcon } from 'lucide-react';
 import { Appointment } from '../../types';
 import { apiService } from '../../services/api';
 import { Badge } from '../../components/common/Badge';
-import { formatDateTime } from '../../utils/formatters';
+import { useNotifications } from '../../hooks/useNotifications';
 
 const HOURS = Array.from({ length: 11 }, (_, i) => i + 8); // 8:00 to 18:00
+const STANDARD_SLOTS = [
+  '08:00', '08:30', '09:00', '09:30', '10:00', '10:30', '11:00', '11:30',
+  '12:00', '12:30', '13:00', '13:30', '14:00', '14:30', '15:00', '15:30',
+  '16:00', '16:30', '17:00'
+];
+
+function formatYMD(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 
 export const RendezVousPage: React.FC = () => {
+  const { showToast } = useNotifications();
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [viewMode, setViewMode] = useState<'week' | 'month'>('week');
   const [currentDatePivot, setCurrentDatePivot] = useState<Date>(() => {
@@ -20,24 +33,36 @@ export const RendezVousPage: React.FC = () => {
   
   // Reschedule Modal State
   const [rescheduleAptId, setRescheduleAptId] = useState<string | null>(null);
-
   const [isLoading, setIsLoading] = useState(false);
 
-  const loadAgenda = async () => {
+  const dateRange = useMemo(() => {
+    const year = currentDatePivot.getFullYear();
+    const month = currentDatePivot.getMonth();
+    const start = new Date(year, month, 1);
+    start.setDate(start.getDate() - 7);
+    const end = new Date(year, month + 1, 0);
+    end.setDate(end.getDate() + 7);
+    return {
+      startDate: formatYMD(start),
+      endDate: formatYMD(end)
+    };
+  }, [currentDatePivot]);
+
+  const loadAgenda = useCallback(async () => {
     setIsLoading(true);
     try {
-      const data = await apiService.getDoctorAgenda();
+      const data = await apiService.getDoctorAgenda(dateRange.startDate, dateRange.endDate);
       setAppointments(data);
-    } catch (e) {
-      setAppointments(apiService.getAppointments());
+    } catch {
+      setAppointments([]);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [dateRange.startDate, dateRange.endDate]);
 
   useEffect(() => {
     loadAgenda();
-  }, []);
+  }, [loadAgenda]);
 
   const handlePrev = () => {
     const newDate = new Date(currentDatePivot);
@@ -60,7 +85,6 @@ export const RendezVousPage: React.FC = () => {
   };
 
   const weekDays = useMemo(() => {
-    // Determine the monday of the current pivot
     const d = new Date(currentDatePivot);
     const day = d.getDay();
     const diff = d.getDate() - day + (day === 0 ? -6 : 1);
@@ -74,24 +98,31 @@ export const RendezVousPage: React.FC = () => {
   }, [currentDatePivot]);
 
   const getAppointmentsForDay = (date: Date) => {
+    const targetYmd = formatYMD(date);
     return appointments.filter(apt => {
+      if (apt.appointmentDate) {
+        return apt.appointmentDate === targetYmd;
+      }
       const aptDate = new Date(apt.dateTime);
       return aptDate.toDateString() === date.toDateString();
     }).sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
   };
 
   const updateAppointmentStatus = async (id: string, newStatus: Appointment['status']) => {
-    try {
-      if (newStatus === 'CONFIRME') {
-        await apiService.approveDoctorAppointment(id);
-      } else if (newStatus === 'ANNULE') {
-        await apiService.cancelDoctorAppointment(id, 'Annulé par le praticien');
+    if (newStatus === 'CONFIRME') {
+      const ok = await apiService.approveDoctorAppointment(id);
+      if (ok) {
+        showToast('Rendez-vous approuvé', 'Le rendez-vous a été confirmé avec succès.', 'success');
       } else {
-        apiService.updateAppointment(id, { status: newStatus });
+        showToast('Erreur', 'Impossible de confirmer ce rendez-vous.', 'error');
       }
-    } catch (e) {
-      console.warn('Fallback updateAppointment:', e);
-      apiService.updateAppointment(id, { status: newStatus });
+    } else if (newStatus === 'ANNULE') {
+      const ok = await apiService.cancelDoctorAppointment(id, 'Annulé par le praticien');
+      if (ok) {
+        showToast('Rendez-vous annulé', 'Le rendez-vous a été annulé.', 'info');
+      } else {
+        showToast('Erreur', "Impossible d'annuler ce rendez-vous.", 'error');
+      }
     }
     await loadAgenda();
   };
@@ -106,17 +137,17 @@ export const RendezVousPage: React.FC = () => {
     const formData = new FormData(e.currentTarget);
     const dateStr = formData.get('date') as string;
     const timeStr = formData.get('time') as string;
+    const reasonStr = (formData.get('reason') as string) || 'Reprogrammé par le médecin';
     
     if (dateStr && timeStr) {
-      try {
-        await apiService.rescheduleDoctorAppointment(rescheduleAptId, dateStr, timeStr);
-      } catch (e) {
-        console.warn('Fallback reschedule:', e);
-        const newDateTime = `${dateStr}T${timeStr}`;
-        apiService.updateAppointment(rescheduleAptId, { dateTime: newDateTime, status: 'PROGRAMME' });
+      const res = await apiService.rescheduleDoctorAppointment(rescheduleAptId, dateStr, timeStr, reasonStr);
+      if (res.success) {
+        showToast('Rendez-vous reprogrammé', `Nouveau créneau fixé au ${dateStr} à ${timeStr}.`, 'success');
+        await loadAgenda();
+        setRescheduleAptId(null);
+      } else {
+        showToast('Erreur', res.error || 'Créneau indisponible ou date invalide (jours ouvrés uniquement).', 'error');
       }
-      await loadAgenda();
-      setRescheduleAptId(null);
     }
   };
 
@@ -215,7 +246,7 @@ export const RendezVousPage: React.FC = () => {
                       <div className="font-bold truncate">{apt.patientName}</div>
                       <div className="opacity-80 truncate">{apt.reason}</div>
                       <div className="text-[10px] mt-1 font-medium opacity-70">
-                        {aptDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                        {apt.scheduledTime || aptDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                       </div>
                     </div>
                   );
@@ -238,7 +269,6 @@ export const RendezVousPage: React.FC = () => {
 
     const days = [];
 
-    // Empty cells
     for (let i = 1; i < startingDay; i++) {
       days.push(<div key={`empty-${i}`} className="p-2 border-r border-b border-slate-100 bg-slate-50/30"></div>);
     }
@@ -268,7 +298,7 @@ export const RendezVousPage: React.FC = () => {
                   ${apt.status === 'ANNULE' ? 'bg-rose-100 text-rose-800' : ''}
                   ${apt.status === 'TERMINE' ? 'bg-slate-100 text-slate-800' : ''}
                `}>
-                {apt.patientName}
+                {apt.scheduledTime ? `${apt.scheduledTime} ` : ''}{apt.patientName}
               </div>
             ))}
             {dayAppointments.length > 3 && (
@@ -281,7 +311,6 @@ export const RendezVousPage: React.FC = () => {
       );
     }
 
-    // Fill remaining cells for grid consistency
     const totalCells = days.length;
     const remainingCells = (7 - (totalCells % 7)) % 7;
     for (let i = 0; i < remainingCells; i++) {
@@ -321,7 +350,9 @@ export const RendezVousPage: React.FC = () => {
           </div>
           <div>
             <h1 className="text-3xl font-extrabold text-[#0f172a] tracking-tight">Agenda</h1>
-            <p className="text-slate-500 mt-1 text-sm">Cliquez sur une date pour voir les détails et approuver les demandes.</p>
+            <p className="text-slate-500 mt-1 text-sm">
+              Cliquez sur une date pour voir les détails et approuver les demandes{isLoading ? ' (Synchronisation...)' : '.'}
+            </p>
           </div>
         </div>
 
@@ -388,7 +419,7 @@ export const RendezVousPage: React.FC = () => {
                     <div className="flex justify-between items-start mb-3">
                       <div className="bg-slate-100 text-slate-700 text-xs font-bold px-2.5 py-1 rounded-md flex items-center gap-1.5">
                         <Clock className="w-3.5 h-3.5 text-slate-500" />
-                        {new Date(apt.dateTime).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                        {apt.scheduledTime || new Date(apt.dateTime).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                       </div>
                       <Badge variant={
                         apt.status === 'PROGRAMME' ? 'warning' :
@@ -487,21 +518,35 @@ export const RendezVousPage: React.FC = () => {
             <form onSubmit={submitReschedule} className="p-6 space-y-4">
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Nouvelle date</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Nouvelle date (Lundi–Vendredi)</label>
                   <input
                     type="date"
                     name="date"
+                    min={new Date().toISOString().split('T')[0]}
                     required
                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-[#1b3b31] focus:ring-2 focus:ring-[#1b3b31]/20 outline-none transition-all"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Nouvelle heure</label>
-                  <input
-                    type="time"
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Nouvel horaire (Créneau 30 min)</label>
+                  <select
                     name="time"
+                    defaultValue="09:00"
                     required
                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-[#1b3b31] focus:ring-2 focus:ring-[#1b3b31]/20 outline-none transition-all"
+                  >
+                    {STANDARD_SLOTS.map(slot => (
+                      <option key={slot} value={slot}>{slot}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Motif du report (Optionnel)</label>
+                  <input
+                    type="text"
+                    name="reason"
+                    placeholder="Ex: Indisponibilité du praticien"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-[#1b3b31] focus:ring-2 focus:ring-[#1b3b31]/20 outline-none transition-all text-sm"
                   />
                 </div>
               </div>

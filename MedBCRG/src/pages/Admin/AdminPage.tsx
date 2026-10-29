@@ -2,12 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
   Users, Shield, CalendarClock, Bell, Activity,
-  Settings2, Calendar, Building, CheckCircle, Clock, ChevronDown,
-  FileText, ListPlus, Download, Droplet
+  Calendar, CheckCircle, Clock, ChevronDown,
+  FileText, Download, Droplet
 } from 'lucide-react';
 import { useNotifications } from '../../hooks/useNotifications';
 import { apiService } from '../../services/api';
-import { HrDashboardData, HrStatisticsData, HrDiabetesStatisticsData, VisitPeriodicitySettings, DueEmployeeItem } from '../../types';
+import { HrDashboardData, HrStatisticsData, HrDiabetesStatisticsData, VisitPeriodicitySettings, DueEmployeeItem, DueEmployeesSummary } from '../../types';
 
 export const AdminPage: React.FC = () => {
   const location = useLocation();
@@ -30,11 +30,12 @@ export const AdminPage: React.FC = () => {
   const currentTabInfo = tabInfo[activeTab] || tabInfo.stats;
 
   const [showTimeMenu, setShowTimeMenu] = useState(false);
-  const [timeFilter, setTimeFilter] = useState('Aujourd\'hui');
+  const [timeFilter, setTimeFilter] = useState('Ce mois');
   const [isExporting, setIsExporting] = useState(false);
   const [hrData, setHrData] = useState<HrDashboardData | null>(null);
   const [hrStats, setHrStats] = useState<HrStatisticsData | null>(null);
   const [hrDiabetes, setHrDiabetes] = useState<HrDiabetesStatisticsData | null>(null);
+  const [dueSummary, setDueSummary] = useState<DueEmployeesSummary | null>(null);
   const [periodicitySettings, setPeriodicitySettings] = useState<VisitPeriodicitySettings>({
     standardFrequencyMonths: 12,
     smrFrequencyMonths: 6,
@@ -47,25 +48,67 @@ export const AdminPage: React.FC = () => {
   // Date du jour formatée
   const today = new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
 
+  const computeDateRange = (filter: string): { startDate?: string; endDate?: string } => {
+    const now = new Date();
+    const toIsoDate = (d: Date) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+    const endDate = toIsoDate(now);
+    if (filter === 'Aujourd\'hui') {
+      return { startDate: endDate, endDate };
+    }
+    if (filter === 'Cette semaine') {
+      const dayOfWeek = now.getDay() === 0 ? 7 : now.getDay();
+      const start = new Date(now);
+      start.setDate(now.getDate() - (dayOfWeek - 1));
+      return { startDate: toIsoDate(start), endDate };
+    }
+    if (filter === 'Ce mois') {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+      return { startDate: toIsoDate(start), endDate };
+    }
+    if (filter === 'Cette année') {
+      const start = new Date(now.getFullYear(), 0, 1);
+      return { startDate: toIsoDate(start), endDate };
+    }
+    return {};
+  };
+
   useEffect(() => {
     apiService.getHrDashboard().then(res => {
       if (res) setHrData(res);
     });
-    apiService.getHrStatistics().then(res => {
-      if (res) setHrStats(res);
-    });
     apiService.getHrDiabetesStatistics().then(res => {
       if (res) setHrDiabetes(res);
     });
+    apiService.getHrDueEmployeesSummary().then(res => {
+      if (res) {
+        setDueSummary(res);
+        setDueEmployees(res.employees);
+      }
+    });
   }, []);
+
+  useEffect(() => {
+    const { startDate, endDate } = computeDateRange(timeFilter);
+    apiService.getHrStatistics(startDate, endDate).then(res => {
+      if (res) setHrStats(res);
+    });
+  }, [timeFilter]);
 
   useEffect(() => {
     if (activeTab === 'settings') {
       apiService.getHrPeriodicitySettings().then(res => {
         if (res) setPeriodicitySettings(res);
       });
-      apiService.getHrDueEmployees().then(res => {
-        if (res) setDueEmployees(res);
+      apiService.getHrDueEmployeesSummary().then(res => {
+        if (res) {
+          setDueSummary(res);
+          setDueEmployees(res.employees);
+        }
       });
     }
   }, [activeTab]);
@@ -80,13 +123,16 @@ export const AdminPage: React.FC = () => {
       });
       if (ok) {
         showToast('Mise à jour réussie', 'Les règles de périodicité ont été appliquées à tous les dossiers actifs.', 'success');
-        const due = await apiService.getHrDueEmployees();
-        if (due) setDueEmployees(due);
+        const summary = await apiService.getHrDueEmployeesSummary();
+        if (summary) {
+          setDueSummary(summary);
+          setDueEmployees(summary.employees);
+        }
       } else {
         showToast('Erreur', 'Impossible d\'enregistrer les paramètres sur le serveur.', 'error');
       }
     } catch {
-      showToast('Mise à jour enregistrée', 'Paramètres de périodicité enregistrés.', 'success');
+      showToast('Erreur', 'Impossible d\'enregistrer les paramètres de périodicité.', 'error');
     } finally {
       setIsSavingSettings(false);
     }
@@ -105,19 +151,23 @@ export const AdminPage: React.FC = () => {
     }
   };
 
-  const totalEmp = hrData?.totalEmployees || 0;
-  const activeEmp = hrData?.activeEmployees || 0;
-  const coverageRate = totalEmp > 0 ? `${Math.round((activeEmp / totalEmp) * 100)}%` : '100%';
+  const totalEmp = dueSummary?.totalEmployees ?? hrData?.totalEmployees ?? 0;
+  const activeEmp = hrData?.activeEmployees || totalEmp;
+  const coverageRate = dueSummary
+    ? `${dueSummary.coverageRatePercent}%`
+    : totalEmp > 0
+      ? `${Math.round((activeEmp / totalEmp) * 100)}%`
+      : '100%';
 
   const stats = {
     couv: coverageRate,
-    ech: 0,
+    ech: dueSummary?.overdueCount || 0,
     sui: totalEmp,
-    arr: hrData?.employeesOnSickLeaveCurrent || 0,
-    urg: 0,
-    cons: hrData?.totalConsultationsThisMonth || 0,
-    obl: totalEmp,
-    inc: 0
+    arr: hrData?.employeesOnSickLeaveCurrent ?? hrStats?.totalSickLeaves ?? 0,
+    urg: hrStats?.totalSickLeaveDays ?? 0,
+    cons: hrStats?.totalConsultations ?? hrData?.totalConsultationsThisMonth ?? 0,
+    obl: dueSummary?.upToDateCount ?? totalEmp,
+    inc: dueSummary?.dueSoonCount || 0
   };
 
   const MOCK_LOGS: any[] = [];
@@ -256,14 +306,14 @@ export const AdminPage: React.FC = () => {
 
               <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 flex flex-col justify-between hover:shadow-md transition-shadow">
                 <div className="flex justify-between items-start mb-2">
-                  <span className="text-sm text-slate-500 font-medium">Urgences gérées</span>
+                  <span className="text-sm text-slate-500 font-medium">Jours d'arrêt cumulés</span>
                   <div className="w-8 h-8 rounded-full bg-rose-50 text-rose-600 flex items-center justify-center">
                     <Activity className="w-4 h-4" />
                   </div>
                 </div>
                 <div className="text-3xl font-bold text-slate-800 mb-4">{stats.urg}</div>
                 <div className="inline-block px-2 py-1 bg-rose-50 text-rose-600 text-xs font-semibold rounded-md self-start">
-                  Depuis janvier
+                  Période sélectionnée
                 </div>
               </div>
             </div>
@@ -283,33 +333,76 @@ export const AdminPage: React.FC = () => {
                     </div>
 
                     <div className="bg-slate-50 p-4 rounded-xl flex flex-col justify-center border border-slate-100">
-                      <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">VISITES OBLIGATOIRES</span>
+                      <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">VISITES À JOUR</span>
                       <span className="text-2xl font-bold text-slate-800">{stats.obl}</span>
                     </div>
 
                     <div className="bg-slate-50 p-4 rounded-xl flex flex-col justify-center border border-slate-100">
-                      <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">DOSSIERS INCOMPLETS</span>
+                      <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">ÉCHÉANCES PROCHES</span>
                       <span className="text-2xl font-bold text-slate-800">{stats.inc}</span>
                     </div>
                   </div>
                 </div>
 
-                {/* VISITES PAR JOUR */}
+                {/* SUIVI DIABÈTE & CONSOMMATION BANDELETTES (RH) */}
                 <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">ÉVOLUTION DES VISITES</h3>
-                  <div className="space-y-4">
-                    <div className="text-center text-slate-500 text-sm py-4">Aucune donnée disponible.</div>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                      <Droplet className="w-4 h-4 text-rose-500" />
+                      INDICATEURS DIABÈTE & CONSOMMATION BANDELETTES
+                    </h3>
                   </div>
+                  {hrDiabetes ? (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div className="bg-rose-50/50 p-4 rounded-xl border border-rose-100">
+                        <span className="text-[11px] font-bold text-rose-600 uppercase tracking-wider block mb-1">Patients diabétiques</span>
+                        <span className="text-2xl font-bold text-slate-800">{hrDiabetes.diabeticPatients}</span>
+                      </div>
+                      <div className="bg-amber-50/50 p-4 rounded-xl border border-amber-100">
+                        <span className="text-[11px] font-bold text-amber-600 uppercase tracking-wider block mb-1">Contrôles glycémie</span>
+                        <span className="text-2xl font-bold text-slate-800">{hrDiabetes.glycemiaChecks}</span>
+                      </div>
+                      <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100">
+                        <span className="text-[11px] font-bold text-blue-600 uppercase tracking-wider block mb-1">Bandelettes utilisées</span>
+                        <span className="text-2xl font-bold text-slate-800">{hrDiabetes.stripConsumption}</span>
+                      </div>
+                      <div className="bg-emerald-50/50 p-4 rounded-xl border border-emerald-100">
+                        <span className="text-[11px] font-bold text-emerald-600 uppercase tracking-wider block mb-1">Stock bandelettes</span>
+                        <span className="text-2xl font-bold text-slate-800">{hrDiabetes.remainingStrips}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-center text-slate-500 text-sm py-4">Aucune donnée disponible.</div>
+                  )}
                 </div>
               </div>
 
               {/* Right Column */}
               <div className="space-y-4">
                 <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">PAR MOTIF DE VISITE</h3>
-                  <div className="space-y-4">
+                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">ÉTAT DES VISITES PÉRIODIQUES</h3>
+                  {dueSummary ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between p-3 bg-emerald-50/60 rounded-xl border border-emerald-100">
+                        <span className="text-xs font-semibold text-emerald-800">À jour</span>
+                        <span className="text-sm font-bold text-emerald-700">{dueSummary.upToDateCount}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-3 bg-amber-50/60 rounded-xl border border-amber-100">
+                        <span className="text-xs font-semibold text-amber-800">Bientôt dues</span>
+                        <span className="text-sm font-bold text-amber-700">{dueSummary.dueSoonCount}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-3 bg-rose-50/60 rounded-xl border border-rose-100">
+                        <span className="text-xs font-semibold text-rose-800">En retard</span>
+                        <span className="text-sm font-bold text-rose-700">{dueSummary.overdueCount}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
+                        <span className="text-xs font-semibold text-slate-700">Effectif SMR (Suivi Renforcé)</span>
+                        <span className="text-sm font-bold text-slate-800">{dueSummary.smrCount}</span>
+                      </div>
+                    </div>
+                  ) : (
                     <div className="text-center text-slate-500 text-sm py-4">Aucune donnée disponible.</div>
-                  </div>
+                  )}
                 </div>
 
                 <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
@@ -527,13 +620,18 @@ export const AdminPage: React.FC = () => {
                       {dueEmployees.map((emp) => (
                         <tr key={emp.id} className="hover:bg-slate-50/50">
                           <td className="p-4 font-mono text-xs font-semibold text-slate-600">{emp.matricule}</td>
-                          <td className="p-4 font-bold text-slate-800">{emp.fullName}</td>
+                          <td className="p-4 font-bold text-slate-800">
+                            {emp.fullName}
+                            {emp.isSmr && (
+                              <span className="ml-2 px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded text-[10px] font-bold">SMR</span>
+                            )}
+                          </td>
                           <td className="p-4 text-slate-600">{emp.department || '—'}</td>
                           <td className="p-4 text-slate-500 text-xs">
-                            {emp.lastVisitDate ? new Date(emp.lastVisitDate).toLocaleDateString('fr-FR') : 'Aucune'}
+                            {emp.lastVisitFormatted || (emp.lastVisitDate ? new Date(emp.lastVisitDate).toLocaleDateString('fr-FR') : 'Aucune')}
                           </td>
                           <td className="p-4 text-xs font-medium">
-                            {emp.nextDueDate ? new Date(emp.nextDueDate).toLocaleDateString('fr-FR') : 'À planifier'}
+                            {emp.nextDueDateFormatted || (emp.nextDueDate ? new Date(emp.nextDueDate).toLocaleDateString('fr-FR') : 'À planifier')}
                           </td>
                           <td className="p-4">
                             <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
@@ -543,7 +641,7 @@ export const AdminPage: React.FC = () => {
                                   ? 'bg-amber-100 text-amber-700 border border-amber-200'
                                   : 'bg-emerald-100 text-emerald-700 border border-emerald-200'
                             }`}>
-                              {emp.status === 'EN_RETARD' ? 'En retard' : emp.status === 'BIENTOT_DUE' ? 'Bientôt due' : 'À jour'}
+                              {emp.statusLabel || (emp.status === 'EN_RETARD' ? 'En retard' : emp.status === 'BIENTOT_DUE' ? 'Bientôt due' : 'À jour')}
                             </span>
                           </td>
                         </tr>

@@ -1,17 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { Stethoscope, Plus, Search, Filter, ChevronDown, User, Activity, Clock, MoreHorizontal, FileText, X, Heart, Pill, CheckCircle, AlertTriangle, Droplets, Droplet, Thermometer, Weight, Ruler, Printer, HeartPulse } from 'lucide-react';
+import { Stethoscope, Plus, Search, Filter, User, Activity, Clock, MoreHorizontal, FileText, X, Heart, Pill, CheckCircle, Droplet, Thermometer, Weight, Ruler, Printer, HeartPulse, Trash2, Calendar } from 'lucide-react';
 import { Consultation, Patient, PrescriptionItem, PatientMedicalRecord } from '../../types';
 import { apiService, API_BASE_URL, viewDocumentBlob } from '../../services/api';
-import { Trash2 } from 'lucide-react';
 import { Badge } from '../../components/common/Badge';
 import { formatDate } from '../../utils/formatters';
 import { CONSULTATION_TYPES_LABEL } from '../../utils/constants';
 import { useNotifications } from '../../hooks/useNotifications';
+import { useAuth } from '../../hooks/useAuth';
 
 export const ConsultationsPage: React.FC = () => {
+  const { user } = useAuth();
   const { showToast } = useNotifications();
   const [consultations, setConsultations] = useState<Consultation[]>([]);
+  const [stats, setStats] = useState<{ consultationsThisMonth: number; recentEmergencies: number; waitingOrInProgressToday: number } | null>(null);
   const [search, setSearch] = useState('');
+  const [filterType, setFilterType] = useState<string>('ALL');
+  const [filterStatus, setFilterStatus] = useState<string>('ALL');
+  const [filterDate, setFilterDate] = useState<string>('');
+  const [showFilters, setShowFilters] = useState(false);
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
 
@@ -31,6 +38,11 @@ export const ConsultationsPage: React.FC = () => {
   const [newMedName, setNewMedName] = useState('');
   const [newMedDosage, setNewMedDosage] = useState('');
   const [newMedDuration, setNewMedDuration] = useState('');
+
+  // Allergy form state in consultation drawer
+  const [newAllergySubstance, setNewAllergySubstance] = useState('');
+  const [newAllergyType, setNewAllergyType] = useState<'DRUG' | 'FOOD' | 'OCCUPATIONAL' | 'OTHER'>('DRUG');
+  const [newAllergySeverity, setNewAllergySeverity] = useState<'MILD' | 'MODERATE' | 'SEVERE'>('MODERATE');
 
   // Vitals state for real-time IMC
   const [modalWeight, setModalWeight] = useState('');
@@ -54,8 +66,22 @@ export const ConsultationsPage: React.FC = () => {
     return Number((weight / Math.pow(height / 100, 2)).toFixed(1));
   };
 
+  const loadConsultationsData = () => {
+    apiService.getConsultations({
+      status: filterStatus !== 'ALL' ? filterStatus : undefined,
+      type: filterType !== 'ALL' ? filterType : undefined,
+      date: filterDate || undefined,
+    }).then(setConsultations);
+    apiService.getConsultationsStats().then(res => {
+      if (res) setStats(res);
+    });
+  };
+
   useEffect(() => {
-    apiService.getConsultations().then(setConsultations);
+    loadConsultationsData();
+  }, [filterStatus, filterType, filterDate]);
+
+  useEffect(() => {
     apiService.getPatients().then(setAllPatients);
   }, []);
 
@@ -91,7 +117,6 @@ export const ConsultationsPage: React.FC = () => {
     setSelectedPatient(patient);
     setPatientSearch(`${patient.firstName} ${patient.lastName} — ${patient.matricule}`);
     setShowPatientDropdown(false);
-    // Détecter si le patient a un antécédent de diabète
     const isDiabetic = patient.chronicConditions?.some(c => c.toLowerCase().includes('diab')) || false;
     if (isDiabetic) {
       setIsDiabeticCheck(true);
@@ -106,20 +131,24 @@ export const ConsultationsPage: React.FC = () => {
     setActiveMenu(null);
   };
 
+  const refreshMedicalRecord = (patientId: string) => {
+    setIsLoadingRecord(true);
+    apiService.getPatientMedicalRecord(patientId)
+      .then(record => {
+        setMedicalRecord(record);
+      })
+      .catch(err => {
+        console.error('Erreur chargement dossier médical dans consultation:', err);
+        setMedicalRecord(null);
+      })
+      .finally(() => {
+        setIsLoadingRecord(false);
+      });
+  };
+
   useEffect(() => {
     if (openConsultation?.patientId) {
-      setIsLoadingRecord(true);
-      apiService.getPatientMedicalRecord(openConsultation.patientId)
-        .then(record => {
-          setMedicalRecord(record);
-        })
-        .catch(err => {
-          console.error('Erreur chargement dossier médical dans consultation:', err);
-          setMedicalRecord(null);
-        })
-        .finally(() => {
-          setIsLoadingRecord(false);
-        });
+      refreshMedicalRecord(openConsultation.patientId);
     } else {
       setMedicalRecord(null);
     }
@@ -132,17 +161,20 @@ export const ConsultationsPage: React.FC = () => {
   const handleSaveDiagnosis = async () => {
     if (!openConsultation) return;
 
-    // Save to DB
     const updatedRes = await apiService.updateConsultation(openConsultation.id, {
       diagnosis: editDiagnosis,
       notes: editNotes
     });
 
     if (updatedRes) {
-      // Update local state
-      const updated = consultations.map(c => c.id === openConsultation.id ? updatedRes : c);
-      setConsultations(updated);
-      setOpenConsultation(updatedRes);
+      const merged: Consultation = {
+        ...openConsultation,
+        ...updatedRes,
+        diagnosis: editDiagnosis,
+        notes: editNotes
+      };
+      setConsultations(consultations.map(c => c.id === openConsultation.id ? merged : c));
+      setOpenConsultation(merged);
       showToast('Succès', 'Le diagnostic a été enregistré.', 'success');
     } else {
       showToast('Erreur', 'Impossible de sauvegarder le diagnostic.', 'error');
@@ -150,18 +182,54 @@ export const ConsultationsPage: React.FC = () => {
   };
 
   const handleUpdateBloodGroup = async (bloodGroup: string) => {
-    if (!openConsultation) return;
-    const patient = getPatientForConsultation(openConsultation);
-    if (!patient) return;
+    if (!openConsultation || !bloodGroup) return;
 
-    // Save to DB
-    await apiService.savePatient({ ...patient, bloodGroup });
-    if (medicalRecord) {
-      setMedicalRecord({ ...medicalRecord, bloodGroup });
+    // Mise à jour via PATCH /api/doctor/consultations/:id (vitals.bloodGroup) autorisé pour le rôle DOCTOR
+    const updatedRes = await apiService.updateConsultation(openConsultation.id, {
+      vitals: {
+        ...openConsultation.vitals,
+        bloodGroup
+      }
+    });
+
+    if (updatedRes) {
+      if (medicalRecord) {
+        setMedicalRecord({ ...medicalRecord, bloodGroup });
+      }
+      setAllPatients(prev => prev.map(p => p.id === openConsultation.patientId ? { ...p, bloodGroup } : p));
+      showToast('Groupe sanguin enregistré', `Groupe sanguin mis à jour (${bloodGroup}).`, 'success');
+    } else {
+      showToast('Erreur', 'Impossible de mettre à jour le groupe sanguin.', 'error');
     }
+  };
 
-    // Refresh local state
-    apiService.getPatients().then(setAllPatients);
+  const handleAddAllergy = async () => {
+    if (!openConsultation?.patientId || !newAllergySubstance.trim()) return;
+    const res = await apiService.addPatientAllergy(openConsultation.patientId, {
+      allergyType: newAllergyType,
+      substance: newAllergySubstance.trim(),
+      severity: newAllergySeverity
+    });
+    if (res.success) {
+      showToast('Allergie ajoutée', `${newAllergySubstance} a été enregistrée pour ce patient.`, 'success');
+      setNewAllergySubstance('');
+      refreshMedicalRecord(openConsultation.patientId);
+      apiService.getPatients().then(setAllPatients);
+    } else {
+      showToast('Erreur', res.error || "Impossible d'ajouter l'allergie.", 'error');
+    }
+  };
+
+  const handleDeleteAllergy = async (allergyId: string) => {
+    if (!openConsultation?.patientId) return;
+    const ok = await apiService.deletePatientAllergy(openConsultation.patientId, allergyId);
+    if (ok) {
+      showToast('Allergie retirée', "L'allergie a été supprimée du dossier.", 'info');
+      refreshMedicalRecord(openConsultation.patientId);
+      apiService.getPatients().then(setAllPatients);
+    } else {
+      showToast('Erreur', "Impossible de supprimer l'allergie.", 'error');
+    }
   };
 
   const handleAddPrescription = async () => {
@@ -235,7 +303,6 @@ export const ConsultationsPage: React.FC = () => {
   const handleTerminerConsultation = async () => {
     if (!openConsultation) return;
 
-    // Génération automatique silencieuse du document PDF de l'ordonnance
     if (openConsultation.prescriptions && openConsultation.prescriptions.length > 0) {
       try {
         await apiService.generatePrescriptionPdf(openConsultation.id);
@@ -244,28 +311,25 @@ export const ConsultationsPage: React.FC = () => {
       }
     }
 
-    // Clôture officielle via le nouvel endpoint /api/doctor/consultations/:id/complete
-    try {
-      await apiService.completeConsultation(openConsultation.id, {
-        diagnosis: editDiagnosis,
-        advice: editNotes
-      });
-    } catch (err) {
-      console.warn('Fallback updateConsultation complete:', err);
-    }
-
-    // Enregistrement de mise à jour locale & DB
-    const res = await apiService.updateConsultation(openConsultation.id, {
+    const res = await apiService.completeConsultation(openConsultation.id, {
       diagnosis: editDiagnosis,
-      notes: editNotes,
-      status: 'TERMINEE'
+      advice: editNotes
     });
 
     if (res) {
-      const updated = consultations.map(c => c.id === openConsultation.id ? res : c);
-      setConsultations(updated);
+      const merged: Consultation = {
+        ...openConsultation,
+        ...res,
+        diagnosis: editDiagnosis,
+        notes: editNotes,
+        status: 'TERMINEE'
+      };
+      setConsultations(consultations.map(c => c.id === openConsultation.id ? merged : c));
       setOpenConsultation(null);
-      showToast('Consultation terminée', 'La consultation a été clôturée avec succès et l\'ordonnance PDF a été archivée.', 'success');
+      loadConsultationsData();
+      showToast('Consultation terminée', 'La consultation a été clôturée avec succès.', 'success');
+    } else {
+      showToast('Erreur', 'Impossible de clôturer la consultation.', 'error');
     }
   };
 
@@ -274,12 +338,16 @@ export const ConsultationsPage: React.FC = () => {
     if (!selectedPatient) return;
     const formData = new FormData(e.currentTarget);
 
+    const doctorDisplayName = user?.name
+      ? (user.name.toLowerCase().startsWith('dr') ? user.name : `Dr. ${user.name}`)
+      : 'Médecin BCRG';
+
     const newConsultation = await apiService.addConsultation({
       patientId: selectedPatient.id,
       patientName: `${selectedPatient.firstName} ${selectedPatient.lastName}`,
       patientMatricule: selectedPatient.matricule,
-      doctorId: 'DOC-01',
-      doctorName: 'Dr. Ousmane Bangoura',
+      doctorId: user?.id || '',
+      doctorName: doctorDisplayName,
       type: formData.get('type') as any,
       symptoms: formData.get('symptoms') as string,
       diagnosis: formData.get('diagnosis') as string || '',
@@ -300,16 +368,24 @@ export const ConsultationsPage: React.FC = () => {
 
     if (newConsultation) {
       setConsultations([newConsultation, ...consultations]);
+      loadConsultationsData();
       resetModal();
       showToast('Succès', 'Consultation démarrée avec constantes enregistrées.', 'success');
+    } else {
+      showToast('Erreur', 'Impossible de démarrer la consultation. Vérifiez les constantes saisies (ex: tension 120/80).', 'error');
     }
   };
 
   const filtered = consultations.filter(c =>
     (c.patientName?.toLowerCase() || '').includes(search.toLowerCase()) ||
     (c.patientMatricule?.toLowerCase() || '').includes(search.toLowerCase()) ||
-    (c.diagnosis?.toLowerCase() || '').includes(search.toLowerCase())
+    (c.diagnosis?.toLowerCase() || '').includes(search.toLowerCase()) ||
+    (c.symptoms?.toLowerCase() || '').includes(search.toLowerCase())
   );
+
+  const monthCount = stats?.consultationsThisMonth ?? consultations.length;
+  const emergenciesCount = stats?.recentEmergencies ?? consultations.filter(c => c.type === 'INSTANT').length;
+  const activeCount = stats?.waitingOrInProgressToday ?? consultations.filter(c => c.status !== 'TERMINEE').length;
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -342,7 +418,7 @@ export const ConsultationsPage: React.FC = () => {
               <Stethoscope className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-3xl font-bold text-slate-800 mb-4">{consultations.length}</div>
+          <div className="text-3xl font-bold text-slate-800 mb-4">{monthCount}</div>
           <div className="inline-block px-2 py-1 bg-emerald-50 text-emerald-600 text-xs font-semibold rounded-md self-start">
             Ce mois
           </div>
@@ -355,7 +431,7 @@ export const ConsultationsPage: React.FC = () => {
               <Activity className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-3xl font-bold text-slate-800 mb-4">{consultations.filter(c => c.type === 'INSTANT').length}</div>
+          <div className="text-3xl font-bold text-slate-800 mb-4">{emergenciesCount}</div>
           <div className="inline-block px-2 py-1 bg-rose-50 text-rose-600 text-xs font-semibold rounded-md self-start">
             Urgences
           </div>
@@ -368,7 +444,7 @@ export const ConsultationsPage: React.FC = () => {
               <Clock className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-3xl font-bold text-slate-800 mb-4">{consultations.filter(c => c.status !== 'TERMINEE').length}</div>
+          <div className="text-3xl font-bold text-slate-800 mb-4">{activeCount}</div>
           <div className="inline-block px-2 py-1 bg-amber-50 text-amber-600 text-xs font-semibold rounded-md self-start">
             Aujourd'hui
           </div>
@@ -378,27 +454,90 @@ export const ConsultationsPage: React.FC = () => {
       {/* Main Content Area */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100">
         {/* Controls */}
-        <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row gap-4 justify-between items-center bg-slate-50/50">
-          <div className="relative w-full max-w-md">
-            <Search className="w-5 h-5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              placeholder="Rechercher (patient, matricule, diagnostic)..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 bg-white border border-slate-200 focus:bg-white focus:border-[#1b3b31] focus:ring-2 focus:ring-[#1b3b31]/20 rounded-xl outline-none text-sm transition-all"
-            />
+        <div className="p-4 border-b border-slate-100 flex flex-col gap-3 bg-slate-50/50">
+          <div className="flex flex-col sm:flex-row gap-4 justify-between items-center">
+            <div className="relative w-full max-w-md">
+              <Search className="w-5 h-5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Rechercher (patient, matricule, diagnostic)..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 bg-white border border-slate-200 focus:bg-white focus:border-[#1b3b31] focus:ring-2 focus:ring-[#1b3b31]/20 rounded-xl outline-none text-sm transition-all"
+              />
+            </div>
+            <div className="flex gap-3 w-full sm:w-auto items-center">
+              <button
+                type="button"
+                onClick={() => setShowFilters(!showFilters)}
+                className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 border rounded-xl text-sm font-medium transition-colors ${
+                  showFilters || filterType !== 'ALL' || filterStatus !== 'ALL'
+                    ? 'bg-[#1b3b31] text-white border-[#1b3b31]'
+                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <Filter className="w-4 h-4" />
+                Filtrer
+              </button>
+              <div className="relative flex-1 sm:flex-none flex items-center">
+                <Calendar className="w-4 h-4 text-slate-400 absolute left-3 pointer-events-none" />
+                <input
+                  type="date"
+                  value={filterDate}
+                  onChange={(e) => setFilterDate(e.target.value)}
+                  className="pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-50 outline-none focus:border-[#1b3b31]"
+                />
+                {filterDate && (
+                  <button
+                    type="button"
+                    onClick={() => setFilterDate('')}
+                    className="ml-1 p-1 text-slate-400 hover:text-slate-600"
+                    title="Effacer la date"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
-          <div className="flex gap-3 w-full sm:w-auto">
-            <button className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
-              <Filter className="w-4 h-4" />
-              Filtrer
-            </button>
-            <button className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
-              Date
-              <ChevronDown className="w-4 h-4" />
-            </button>
-          </div>
+
+          {showFilters && (
+            <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-200/60">
+              <select
+                value={filterType}
+                onChange={(e) => setFilterType(e.target.value)}
+                className="px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-700 outline-none focus:border-[#1b3b31]"
+              >
+                <option value="ALL">Tous les types</option>
+                <option value="GENERAL">Consultation générale</option>
+                <option value="INSTANT">Urgence</option>
+                <option value="PERIODIC">Visite périodique</option>
+              </select>
+              <select
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value)}
+                className="px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-700 outline-none focus:border-[#1b3b31]"
+              >
+                <option value="ALL">Tous les statuts</option>
+                <option value="EN_COURS">En cours</option>
+                <option value="EN_ATTENTE">En attente</option>
+                <option value="TERMINEE">Terminée</option>
+              </select>
+              {(filterType !== 'ALL' || filterStatus !== 'ALL' || filterDate) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFilterType('ALL');
+                    setFilterStatus('ALL');
+                    setFilterDate('');
+                  }}
+                  className="text-xs text-rose-600 hover:underline font-medium"
+                >
+                  Réinitialiser les filtres
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Table */}
@@ -416,7 +555,11 @@ export const ConsultationsPage: React.FC = () => {
             </thead>
             <tbody className="text-sm">
               {filtered.map((c) => (
-                <tr key={c.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors group cursor-pointer">
+                <tr
+                  key={c.id}
+                  onClick={() => handleOpenConsultation(c)}
+                  className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors group cursor-pointer"
+                >
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
@@ -450,7 +593,7 @@ export const ConsultationsPage: React.FC = () => {
                       {c.status}
                     </Badge>
                   </td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="px-6 py-4 text-right" onClick={(e) => e.stopPropagation()}>
                     <div className="flex justify-end relative">
                       <button
                         onClick={() => setActiveMenu(activeMenu === c.id ? null : c.id)}
@@ -492,7 +635,7 @@ export const ConsultationsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Modal Nouvelle Consultation (Simplified) */}
+      {/* Modal Nouvelle Consultation */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl w-full max-w-lg shadow-xl animate-in zoom-in-95 duration-200">
@@ -571,7 +714,7 @@ export const ConsultationsPage: React.FC = () => {
                     <select required name="type" className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#1b3b31]/20 focus:border-[#1b3b31] transition-all bg-white">
                       <option value="GENERAL">Générale</option>
                       <option value="INSTANT">Urgence</option>
-                      <option value="PERIODIC">Suivi</option>
+                      <option value="PERIODIC">Suivi périodique</option>
                     </select>
                   </div>
 
@@ -591,7 +734,7 @@ export const ConsultationsPage: React.FC = () => {
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     <div className="space-y-1.5">
                       <label className="text-xs font-medium text-slate-500">Tension (mmHg)</label>
-                      <input name="tension" type="text" className="w-full px-3 py-1.5 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#1b3b31]/20 focus:border-[#1b3b31] text-sm" placeholder="120/80" />
+                      <input name="tension" type="text" pattern="^\d{2,3}\/\d{2,3}$" title="Format attendu: 120/80" className="w-full px-3 py-1.5 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#1b3b31]/20 focus:border-[#1b3b31] text-sm" placeholder="120/80" />
                     </div>
                     <div className="space-y-1.5">
                       <label className="text-xs font-medium text-slate-500">Temp. (°C)</label>
@@ -816,47 +959,86 @@ export const ConsultationsPage: React.FC = () => {
                               <p className="text-base font-bold text-red-600">{medicalRecord?.bloodGroup || patient?.bloodGroup || 'Non renseigné'}</p>
                             </div>
                           </div>
-                          {!(medicalRecord?.bloodGroup || patient?.bloodGroup) && (
-                            <select
-                              value=""
-                              onChange={(e) => handleUpdateBloodGroup(e.target.value)}
-                              className="bg-white border border-red-200 text-red-700 text-sm rounded-lg focus:ring-red-500 focus:border-red-500 block px-3 py-1.5 outline-none font-medium cursor-pointer"
-                            >
-                              <option value="" disabled>Saisir...</option>
-                              <option value="A+">A+</option>
-                              <option value="A-">A-</option>
-                              <option value="B+">B+</option>
-                              <option value="B-">B-</option>
-                              <option value="AB+">AB+</option>
-                              <option value="AB-">AB-</option>
-                              <option value="O+">O+</option>
-                              <option value="O-">O-</option>
-                            </select>
-                          )}
+                          <select
+                            value={medicalRecord?.bloodGroup || patient?.bloodGroup || ''}
+                            onChange={(e) => handleUpdateBloodGroup(e.target.value)}
+                            className="bg-white border border-red-200 text-red-700 text-sm rounded-lg focus:ring-red-500 focus:border-red-500 block px-3 py-1.5 outline-none font-medium cursor-pointer"
+                          >
+                            <option value="" disabled>Définir...</option>
+                            <option value="A+">A+</option>
+                            <option value="A-">A-</option>
+                            <option value="B+">B+</option>
+                            <option value="B-">B-</option>
+                            <option value="AB+">AB+</option>
+                            <option value="AB-">AB-</option>
+                            <option value="O+">O+</option>
+                            <option value="O-">O-</option>
+                          </select>
                         </div>
 
-                        {/* Allergies */}
-                        {((medicalRecord?.allergies && medicalRecord.allergies.length > 0) || (patient?.allergies && patient.allergies.length > 0)) && (
-                          <div className="bg-rose-50 border border-rose-100 rounded-xl p-4">
-                            <p className="text-xs font-medium text-rose-500 uppercase tracking-wider mb-2">Allergies déclarées</p>
-                            <div className="flex flex-wrap gap-2">
-                              {medicalRecord?.allergies && medicalRecord.allergies.length > 0 ? (
-                                medicalRecord.allergies.map(a => (
-                                  <div key={a.id} className="flex items-center gap-1.5 px-3 py-1 bg-white border border-rose-200 rounded-lg text-xs">
-                                    <span className="font-bold text-rose-800">{a.substance}</span>
-                                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${a.severity === 'SEVERE' ? 'bg-red-100 text-red-700' : 'bg-rose-100 text-rose-700'
-                                      }`}>{a.severity}</span>
-                                    {a.reactionDetails && <span className="text-slate-500 italic">({a.reactionDetails})</span>}
-                                  </div>
-                                ))
-                              ) : (
-                                patient?.allergies?.map((a, i) => (
-                                  <span key={i} className="px-3 py-1 bg-rose-100 text-rose-700 text-xs font-medium rounded-full">{a}</span>
-                                ))
-                              )}
-                            </div>
+                        {/* Allergies + Ajout/Suppression */}
+                        <div className="bg-rose-50 border border-rose-100 rounded-xl p-4 space-y-3">
+                          <p className="text-xs font-bold text-rose-600 uppercase tracking-wider">Allergies déclarées</p>
+                          <div className="flex flex-wrap gap-2">
+                            {medicalRecord?.allergies && medicalRecord.allergies.length > 0 ? (
+                              medicalRecord.allergies.map(a => (
+                                <div key={a.id} className="flex items-center gap-1.5 px-3 py-1 bg-white border border-rose-200 rounded-lg text-xs">
+                                  <span className="font-bold text-rose-800">{a.substance}</span>
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${a.severity === 'SEVERE' ? 'bg-red-100 text-red-700' : 'bg-rose-100 text-rose-700'
+                                    }`}>{a.severity}</span>
+                                  {a.reactionDetails && <span className="text-slate-500 italic">({a.reactionDetails})</span>}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteAllergy(a.id)}
+                                    className="ml-1 text-rose-400 hover:text-rose-700"
+                                    title="Supprimer cette allergie"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              ))
+                            ) : (
+                              <span className="text-xs text-slate-500 italic">Aucune allergie enregistrée.</span>
+                            )}
                           </div>
-                        )}
+
+                          <div className="pt-2 border-t border-rose-200/60 flex flex-wrap gap-2 items-center">
+                            <input
+                              type="text"
+                              value={newAllergySubstance}
+                              onChange={(e) => setNewAllergySubstance(e.target.value)}
+                              placeholder="Nouvelle allergie (ex: Pénicilline)..."
+                              className="flex-1 min-w-[160px] px-3 py-1.5 bg-white border border-rose-200 rounded-lg text-xs outline-none focus:border-rose-400"
+                            />
+                            <select
+                              value={newAllergyType}
+                              onChange={(e) => setNewAllergyType(e.target.value as any)}
+                              className="px-2.5 py-1.5 bg-white border border-rose-200 rounded-lg text-xs outline-none"
+                            >
+                              <option value="DRUG">Médicament</option>
+                              <option value="FOOD">Alimentaire</option>
+                              <option value="OCCUPATIONAL">Professionnelle</option>
+                              <option value="OTHER">Autre</option>
+                            </select>
+                            <select
+                              value={newAllergySeverity}
+                              onChange={(e) => setNewAllergySeverity(e.target.value as any)}
+                              className="px-2.5 py-1.5 bg-white border border-rose-200 rounded-lg text-xs outline-none"
+                            >
+                              <option value="MILD">Légère</option>
+                              <option value="MODERATE">Modérée</option>
+                              <option value="SEVERE">Sévère</option>
+                            </select>
+                            <button
+                              type="button"
+                              onClick={handleAddAllergy}
+                              disabled={!newAllergySubstance.trim()}
+                              className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition-colors"
+                            >
+                              + Ajouter
+                            </button>
+                          </div>
+                        </div>
 
                         {/* Antécédents / Histoire médicale */}
                         {(medicalRecord?.medicalHistory || (patient?.chronicConditions && patient.chronicConditions.length > 0)) && (
@@ -961,13 +1143,13 @@ export const ConsultationsPage: React.FC = () => {
                     </div>
 
                     <div>
-                      <label className="text-sm font-bold text-slate-800 block mb-2">Notes complémentaires</label>
+                      <label className="text-sm font-bold text-slate-800 block mb-2">Notes complémentaires / Conseils</label>
                       <textarea
                         value={editNotes}
                         onChange={e => setEditNotes(e.target.value)}
                         rows={2}
                         className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#1b3b31]/20 focus:border-[#1b3b31] transition-all resize-none text-sm"
-                        placeholder="Notes internes..."
+                        placeholder="Recommandations ou conseils médicaux..."
                       />
                     </div>
 

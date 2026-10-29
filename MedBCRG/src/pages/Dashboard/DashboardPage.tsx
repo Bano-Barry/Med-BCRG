@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Users, AlertTriangle, CalendarDays, ActivitySquare, ArrowRight, Pill, ShieldCheck, CheckCircle, Clock } from 'lucide-react';
-import { StatCard } from '../../components/common/StatCard';
+import { Users, AlertTriangle, CalendarDays, ActivitySquare, ArrowRight, Pill, ShieldCheck, Clock, Droplet } from 'lucide-react';
 import { Badge } from '../../components/common/Badge';
 import { apiService } from '../../services/api';
 import { DashboardStats, Consultation, DoctorDashboardData } from '../../types';
@@ -8,6 +7,14 @@ import { formatDate } from '../../utils/formatters';
 import { CONSULTATION_TYPES_LABEL } from '../../utils/constants';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
+
+function normalizeActionRoute(url?: string): string {
+  if (!url) return '/consultations';
+  if (url.includes('dossiers-medicaux')) return '/patients';
+  if (url.includes('agenda') || url.includes('rendez-vous')) return '/rendez-vous';
+  if (url.includes('stock') || url.includes('pharmacie')) return '/pharmacie';
+  return url;
+}
 
 export const DashboardPage: React.FC = () => {
   const { user } = useAuth();
@@ -35,17 +42,20 @@ export const DashboardPage: React.FC = () => {
   const weeklyActivity = doctorData?.weeklyActivity || [];
   const maxWeeklyCount = Math.max(...weeklyActivity.map(w => w.count), 5);
 
+  const diabetesKpis = doctorData?.diabetesKpis;
+  const diabeticPassages = doctorData?.diabeticMonthlyPassages || [];
+
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      {/* Banner Admin */}
+      {/* Banner Admin / Médecin */}
       <div className="bg-[#1b3b31] rounded-2xl p-8 relative overflow-hidden text-white shadow-md">
         <div className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center">
           <div className="max-w-2xl">
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full border border-white/30 bg-white/10 text-xs font-bold uppercase tracking-wider mb-4">
               <ShieldCheck className="w-4 h-4" />
-              <span>{user?.role || 'Administration'}</span>
+              <span>{user?.role || 'Médecin'}</span>
             </div>
-            <h1 className="text-3xl font-bold mb-2">Tableau de bord {user?.role?.toLowerCase() || 'admin'}</h1>
+            <h1 className="text-3xl font-bold mb-2">Tableau de bord {user?.role?.toLowerCase() || 'médecin'}</h1>
             <p className="text-white/80">
               Vue globale des ressources, des consultations et des tendances pour piloter les opérations de l'infirmerie.
             </p>
@@ -59,9 +69,8 @@ export const DashboardPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Admin Stats Cards - 5 columns */}
+      {/* Stats Cards - 5 columns */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-        {/* Card 1 */}
         <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 flex flex-col justify-between hover:shadow-md transition-shadow">
           <div className="flex justify-between items-start mb-2">
             <span className="text-sm text-slate-500 font-medium">Consultations aujourd'hui</span>
@@ -75,7 +84,6 @@ export const DashboardPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Card 2 */}
         <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 flex flex-col justify-between hover:shadow-md transition-shadow">
           <div className="flex justify-between items-start mb-2">
             <span className="text-sm text-slate-500 font-medium">Consultations actives</span>
@@ -89,7 +97,6 @@ export const DashboardPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Card 3 */}
         <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 flex flex-col justify-between hover:shadow-md transition-shadow">
           <div className="flex justify-between items-start mb-2">
             <span className="text-sm text-slate-500 font-medium">Départements</span>
@@ -103,7 +110,6 @@ export const DashboardPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Card 4 */}
         <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 flex flex-col justify-between hover:shadow-md transition-shadow">
           <div className="flex justify-between items-start mb-2">
             <span className="text-sm text-slate-500 font-medium">Personnel examiné</span>
@@ -117,7 +123,6 @@ export const DashboardPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Card 5 */}
         <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 flex flex-col justify-between hover:shadow-md transition-shadow">
           <div className="flex justify-between items-start mb-2">
             <span className="text-sm text-slate-500 font-medium">Utilisateurs</span>
@@ -132,9 +137,82 @@ export const DashboardPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Nouveaux Blocs pour étoffer le contenu */}
+      {/* Suivi Diabète & Bandelettes Glycémiques */}
+      {diabetesKpis && (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-5">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
+                <Droplet className="w-5 h-5 fill-rose-500" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-slate-800">Suivi Diabète & Stock Bandelettes</h2>
+                <p className="text-xs text-slate-500">Indicateurs de dépistage glycémique et consommation de consommables</p>
+              </div>
+            </div>
+            <Link to="/pharmacie" className="text-xs font-semibold text-[#1b3b31] hover:underline flex items-center gap-1">
+              Détails du stock <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="p-4 rounded-xl bg-rose-50/50 border border-rose-100">
+              <span className="text-xs text-slate-500 font-medium block mb-1">Patients diabétiques suivis</span>
+              <span className="text-2xl font-bold text-rose-700">{diabetesKpis.diabeticPatients}</span>
+            </div>
+            <div className="p-4 rounded-xl bg-sky-50/50 border border-sky-100">
+              <span className="text-xs text-slate-500 font-medium block mb-1">Contrôles glycémiques</span>
+              <span className="text-2xl font-bold text-sky-700">{diabetesKpis.glycemiaChecks}</span>
+            </div>
+            <div className="p-4 rounded-xl bg-amber-50/50 border border-amber-100">
+              <span className="text-xs text-slate-500 font-medium block mb-1">Bandelettes consommées</span>
+              <span className="text-2xl font-bold text-amber-700">{diabetesKpis.stripConsumption}</span>
+            </div>
+            <div className="p-4 rounded-xl bg-emerald-50/50 border border-emerald-100">
+              <span className="text-xs text-slate-500 font-medium block mb-1">Bandelettes restantes</span>
+              <span className="text-2xl font-bold text-emerald-700">{diabetesKpis.remainingStrips}</span>
+            </div>
+          </div>
+
+          {diabeticPassages.length > 0 && (
+            <div className="mt-5 pt-4 border-t border-slate-100">
+              <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Passages glycémiques du mois</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-100 text-xs text-slate-400">
+                      <th className="py-2 font-medium">Patient</th>
+                      <th className="py-2 font-medium">Département</th>
+                      <th className="py-2 font-medium">Passages (Mois)</th>
+                      <th className="py-2 font-medium">Dernière Glycémie</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {diabeticPassages.slice(0, 5).map(item => (
+                      <tr key={item.patientId} className="hover:bg-slate-50/50">
+                        <td className="py-2.5">
+                          <span className="font-semibold text-slate-800">{item.patientName}</span>
+                          <span className="ml-2 text-xs font-mono text-slate-400">{item.registrationNumber}</span>
+                        </td>
+                        <td className="py-2.5 text-slate-600 text-xs">{item.department || '—'}</td>
+                        <td className="py-2.5">
+                          <Badge variant="info">{item.monthlyVisits} passage{item.monthlyVisits > 1 ? 's' : ''}</Badge>
+                        </td>
+                        <td className="py-2.5 font-semibold text-rose-700">
+                          {item.lastGlycemiaValue ? `${item.lastGlycemiaValue} ${item.lastGlycemiaUnit || 'g/L'}` : 'Effectué'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Activité & Alertes */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8">
-        
         {/* Évolution de l'activité (Graphique en barres) */}
         <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6 flex flex-col">
           <div className="flex items-center justify-between mb-8">
@@ -200,7 +278,7 @@ export const DashboardPage: React.FC = () => {
                     </div>
                   </div>
                   {alert.actionLabel && (
-                    <Link to={alert.actionUrl || '#'} className="px-3 py-1 bg-white border border-slate-200 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-100 transition-colors shrink-0">
+                    <Link to={normalizeActionRoute(alert.actionUrl)} className="px-3 py-1 bg-white border border-slate-200 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-100 transition-colors shrink-0">
                       {alert.actionLabel}
                     </Link>
                   )}
@@ -213,7 +291,6 @@ export const DashboardPage: React.FC = () => {
             )}
           </div>
         </div>
-
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mt-8 pb-10">
@@ -298,8 +375,8 @@ export const DashboardPage: React.FC = () => {
                 <Pill className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-sm font-semibold text-slate-800">Délivrer Médicament</h3>
-                <p className="text-xs text-slate-500 mt-0.5">Gestion de la pharmacie</p>
+                <h3 className="text-sm font-semibold text-slate-800">Suivi Stock & Consommables</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Bandelettes glycémiques & consommables</p>
               </div>
             </Link>
           </div>

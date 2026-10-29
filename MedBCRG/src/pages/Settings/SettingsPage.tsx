@@ -1,20 +1,50 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
+import { useNotifications } from '../../hooks/useNotifications';
+import { apiService } from '../../services/api';
 import {
   ArrowLeft, Key, LogOut, Building2, Mail,
-  User as UserIcon, Building, Phone, ShieldCheck, X
+  User as UserIcon, Building, Phone, X
 } from 'lucide-react';
 
 export const SettingsPage: React.FC = () => {
   const { user, logout } = useAuth();
+  const { showToast } = useNotifications();
   const navigate = useNavigate();
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handlePasswordSubmit = (e: React.FormEvent) => {
+  const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    alert("Mot de passe modifié avec succès !");
-    setIsPasswordModalOpen(false);
+    if (newPassword !== confirmPassword) {
+      showToast('Erreur', 'Les nouveaux mots de passe ne correspondent pas.', 'error');
+      return;
+    }
+    if (newPassword.length < 8) {
+      showToast('Erreur', 'Le nouveau mot de passe doit contenir au moins 8 caractères.', 'error');
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      const res = await apiService.changeInitialPassword(currentPassword, newPassword, confirmPassword);
+      if (res.success) {
+        showToast('Mot de passe modifié', 'Votre mot de passe a été mis à jour avec succès.', 'success');
+        setIsPasswordModalOpen(false);
+        setCurrentPassword('');
+        setNewPassword('');
+        setConfirmPassword('');
+      } else {
+        showToast('Modification non autorisée', res.error || 'Le changement de mot de passe via cet écran est réservé à la première connexion.', 'error');
+      }
+    } catch {
+      showToast('Erreur', 'Une erreur est survenue lors de la modification du mot de passe.', 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -121,7 +151,6 @@ export const SettingsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Permissions */}
       {/* Change Password Modal */}
       {isPasswordModalOpen && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -145,6 +174,8 @@ export const SettingsPage: React.FC = () => {
                   <input
                     type="password"
                     required
+                    value={currentPassword}
+                    onChange={e => setCurrentPassword(e.target.value)}
                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-[#1b3b31] focus:ring-2 focus:ring-[#1b3b31]/20 outline-none transition-all"
                   />
                 </div>
@@ -153,6 +184,8 @@ export const SettingsPage: React.FC = () => {
                   <input
                     type="password"
                     required
+                    value={newPassword}
+                    onChange={e => setNewPassword(e.target.value)}
                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-[#1b3b31] focus:ring-2 focus:ring-[#1b3b31]/20 outline-none transition-all"
                   />
                 </div>
@@ -161,6 +194,8 @@ export const SettingsPage: React.FC = () => {
                   <input
                     type="password"
                     required
+                    value={confirmPassword}
+                    onChange={e => setConfirmPassword(e.target.value)}
                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-[#1b3b31] focus:ring-2 focus:ring-[#1b3b31]/20 outline-none transition-all"
                   />
                 </div>
@@ -175,9 +210,10 @@ export const SettingsPage: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 px-4 py-2 bg-[#1b3b31] text-white rounded-xl font-medium hover:bg-[#142c24] transition-colors"
+                  disabled={isSubmitting}
+                  className="flex-1 px-4 py-2 bg-[#1b3b31] text-white rounded-xl font-medium hover:bg-[#142c24] transition-colors disabled:opacity-50"
                 >
-                  Confirmer
+                  {isSubmitting ? 'Enregistrement...' : 'Confirmer'}
                 </button>
               </div>
             </form>

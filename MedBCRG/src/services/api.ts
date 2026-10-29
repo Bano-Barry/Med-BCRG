@@ -15,11 +15,15 @@ import {
   PatientMedicalRecord,
   VisitPeriodicitySettings,
   DueEmployeeItem,
+  DueEmployeesSummary,
+  AvailableDaysResponse,
   AvailableSlotsResponse
 } from '../types';
 import { getBcrgHubUrl } from '../utils/constants';
 
 const INITIAL_MEDICATIONS: Medication[] = [];
+const INITIAL_CONSULTATIONS: Consultation[] = [];
+const INITIAL_APPOINTMENTS: Appointment[] = [];
 
 // Helper global pour injecter le jeton JWT et intercepter les erreurs 401 (Session expirée)
 export const fetchAuth = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -211,53 +215,17 @@ export const downloadDocumentBlob = async (url: string, filename: string): Promi
   }
 };
 
-const INITIAL_CONSULTATIONS: Consultation[] = [];
-
-const today = new Date();
-const addDays = (date: Date, days: number) => {
-  const result = new Date(date);
-  result.setDate(result.getDate() + days);
-  return result;
-};
-
-const INITIAL_APPOINTMENTS: Appointment[] = [
-  {
-    id: 'APT-1001',
-    patientId: 'PAT-001',
-    patientName: 'Mamadou Diallo',
-    patientMatricule: '1001',
-    doctorName: 'Dr. Ousmane Bangoura',
-    dateTime: addDays(today, 0).toISOString().replace(/T.*/, 'T09:30:00.000Z'),
-    reason: 'Consultation Générale',
-    status: 'CONFIRME'
-  },
-  {
-    id: 'APT-1002',
-    patientId: 'PAT-002',
-    patientName: 'Aïssatou Camara',
-    patientMatricule: '1002',
-    doctorName: 'Dr. Ousmane Bangoura',
-    dateTime: addDays(today, 0).toISOString().replace(/T.*/, 'T14:00:00.000Z'),
-    reason: 'Visite d\'embauche',
-    status: 'PROGRAMME'
-  },
-  {
-    id: 'APT-1003',
-    patientId: 'PAT-003',
-    patientName: 'Ibrahima Barry',
-    patientMatricule: '1003',
-    doctorName: 'Dr. Ousmane Bangoura',
-    dateTime: addDays(today, 2).toISOString().replace(/T.*/, 'T10:15:00.000Z'),
-    reason: 'Suivi tension artérielle',
-    status: 'PROGRAMME'
-  }
-];
-
-// Helper functions pour localStorage
+// Helper functions pour localStorage (uniquement cache de secours hors-ligne)
 const loadStorage = <T,>(key: string, fallback: T): T => {
   try {
     const data = localStorage.getItem(key);
-    return data ? JSON.parse(data) : fallback;
+    if (!data) return fallback;
+    const parsed = JSON.parse(data);
+    // Filtrer les anciens faux rendez-vous de démo éventuellement restés en cache
+    if (key === 'bcrg_appointments_v4' && Array.isArray(parsed)) {
+      return parsed.filter((a: any) => !['APT-1001', 'APT-1002', 'APT-1003'].includes(a?.id)) as unknown as T;
+    }
+    return parsed;
   } catch {
     return fallback;
   }
@@ -270,6 +238,27 @@ const saveStorage = <T,>(key: string, data: T): void => {
     console.error('Erreur sauvegarde localStorage', err);
   }
 };
+
+function normalizeBackendPatient(emp: any): Patient {
+  return {
+    ...emp,
+    id: emp.id,
+    matricule: emp.matricule || emp.registrationNumber || emp.user?.matricule || '',
+    firstName: emp.firstName || emp.user?.firstName || '',
+    lastName: emp.lastName || emp.user?.lastName || '',
+    email: emp.email || emp.user?.email || '',
+    category: emp.category || emp.user?.role || 'AGENT_BCRG',
+    department: emp.department || emp.user?.department || emp.departement || emp.user?.departement || '',
+    jobTitle: emp.jobTitle || emp.user?.jobTitle || emp.jobtitle || emp.user?.jobtitle || '',
+    gender: emp.gender || emp.user?.gender || 'M',
+    birthDate: emp.birthDate || '',
+    phone: emp.phone || emp.user?.phone || '',
+    bloodGroup: emp.bloodGroup,
+    allergies: (emp.allergies || []).map((a: any) => typeof a === 'string' ? a : a.substance || a.allergyType || 'Allergie'),
+    chronicConditions: emp.medicalHistory ? [emp.medicalHistory] : (emp.chronicConditions || []),
+    createdAt: emp.createdAt || new Date().toISOString()
+  };
+}
 
 function normalizeBackendAppointment(item: any): Appointment {
   const dateStr = item.appointmentDate
@@ -292,7 +281,7 @@ function normalizeBackendAppointment(item: any): Appointment {
     patientId: item.patientId || item.patient?.id || '',
     patientName: item.patientName || (item.patient?.user ? `${item.patient.user.firstName} ${item.patient.user.lastName}` : (item.patient?.firstName ? `${item.patient.firstName} ${item.patient.lastName}` : 'Patient BCRG')),
     patientMatricule: item.patientMatricule || item.patient?.registrationNumber || item.patient?.user?.matricule || '',
-    doctorName: item.doctorName || (item.doctor ? `Dr. ${item.doctor.firstName} ${item.doctor.lastName}` : 'Dr. Ousmane Bangoura'),
+    doctorName: item.doctorName || (item.doctor ? `Dr. ${item.doctor.firstName} ${item.doctor.lastName}` : 'Médecin BCRG'),
     dateTime,
     appointmentDate: dateStr,
     scheduledTime: timeStr,
@@ -306,42 +295,80 @@ function normalizeBackendAppointment(item: any): Appointment {
   };
 }
 
+function normalizeDueEmployee(emp: any): DueEmployeeItem {
+  const rawStatus = String(emp.status || '').toUpperCase();
+  let status: DueEmployeeItem['status'] = 'A_JOUR';
+  if (rawStatus === 'OVERDUE' || rawStatus === 'EN_RETARD') {
+    status = 'EN_RETARD';
+  } else if (rawStatus === 'DUE_SOON' || rawStatus === 'BIENTOT_DUE') {
+    status = 'BIENTOT_DUE';
+  } else {
+    status = 'A_JOUR';
+  }
+
+  return {
+    id: emp.patientId || emp.id || emp.matricule,
+    patientId: emp.patientId || emp.id,
+    matricule: emp.matricule || '',
+    fullName: emp.fullName || '',
+    department: emp.department || '',
+    jobTitle: emp.jobTitle || '',
+    isSmr: Boolean(emp.isSmr),
+    smrReason: emp.smrReason || null,
+    frequencyMonths: emp.frequencyMonths,
+    lastVisitDate: emp.lastVisitDate || null,
+    lastVisitFormatted: emp.lastVisitFormatted,
+    nextDueDate: emp.nextDueDate || null,
+    nextDueDateFormatted: emp.nextDueDateFormatted,
+    daysRemaining: emp.daysRemaining,
+    status,
+    statusLabel: emp.statusLabel
+  };
+}
+
 export const apiService = {
   // ──────────────────────────────────────────────────────────────────────────
   // 1. EMPLOYES & DOSSIERS PATIENTS (/api/employees)
   // ──────────────────────────────────────────────────────────────────────────
   getPatients: async (params?: { search?: string; department?: string; page?: number; limit?: number }): Promise<Patient[]> => {
     try {
-      const searchParams = new URLSearchParams();
-      if (params?.search) searchParams.append('search', params.search);
-      if (params?.department && params.department !== 'ALL') searchParams.append('department', params.department);
-      if (params?.page) searchParams.append('page', String(params.page));
-      if (params?.limit) searchParams.append('limit', String(params.limit));
+      const buildUrl = (pageNum: number) => {
+        const searchParams = new URLSearchParams();
+        if (params?.search) searchParams.append('search', params.search);
+        if (params?.department && params.department !== 'ALL') searchParams.append('department', params.department);
+        searchParams.append('page', String(pageNum));
+        searchParams.append('limit', String(params?.limit || 10));
+        const qs = searchParams.toString();
+        return `${API_BASE_URL}/api/employees${qs ? `?${qs}` : ''}`;
+      };
 
-      const qs = searchParams.toString();
-      const url = `${API_BASE_URL}/api/employees${qs ? `?${qs}` : ''}`;
-      const response = await fetchAuth(url);
+      const firstPage = params?.page || 1;
+      const response = await fetchAuth(buildUrl(firstPage));
       const json = await response.json();
 
       if (response.ok && json.success) {
-        return json.data.map((emp: any) => ({
-          ...emp,
-          id: emp.id,
-          matricule: emp.matricule || emp.registrationNumber || emp.user?.matricule || '',
-          firstName: emp.firstName || emp.user?.firstName || '',
-          lastName: emp.lastName || emp.user?.lastName || '',
-          email: emp.email || emp.user?.email || '',
-          category: emp.category || emp.user?.role || 'AGENT_BCRG',
-          department: emp.department || emp.user?.department || emp.departement || emp.user?.departement || '',
-          jobTitle: emp.jobTitle || emp.user?.jobTitle || emp.jobtitle || emp.user?.jobtitle || '',
-          gender: emp.gender || emp.user?.gender || 'M',
-          birthDate: emp.birthDate || '',
-          phone: emp.phone || emp.user?.phone || '',
-          bloodGroup: emp.bloodGroup,
-          allergies: (emp.allergies || []).map((a: any) => typeof a === 'string' ? a : a.substance || a.allergyType || 'Allergie'),
-          chronicConditions: emp.medicalHistory ? [emp.medicalHistory] : (emp.chronicConditions || []),
-          createdAt: emp.createdAt || new Date().toISOString()
-        }));
+        let allRaw: any[] = Array.isArray(json.data) ? [...json.data] : [];
+        const totalPages = json.pagination?.totalPages || 1;
+
+        // Si aucune page spécifique n'a été demandée et que le backend pagine (max 10/page),
+        // récupérer automatiquement les pages suivantes pour restituer la liste complète.
+        if (!params?.page && totalPages > 1) {
+          const pagePromises: Promise<any[]>[] = [];
+          for (let p = 2; p <= totalPages; p++) {
+            pagePromises.push(
+              fetchAuth(buildUrl(p))
+                .then(r => r.json())
+                .then(j => (j?.success && Array.isArray(j.data) ? j.data : []))
+                .catch(() => [])
+            );
+          }
+          const remainingPages = await Promise.all(pagePromises);
+          for (const pageItems of remainingPages) {
+            allRaw = allRaw.concat(pageItems);
+          }
+        }
+
+        return allRaw.map(normalizeBackendPatient);
       }
       return [];
     } catch (e) {
@@ -355,25 +382,7 @@ export const apiService = {
       const response = await fetchAuth(`${API_BASE_URL}/api/employees/${id}`);
       const json = await response.json();
       if (response.ok && json.success) {
-        const emp = json.data;
-        return {
-          ...emp,
-          id: emp.id,
-          matricule: emp.matricule || emp.registrationNumber || emp.user?.matricule || '',
-          firstName: emp.firstName || emp.user?.firstName || '',
-          lastName: emp.lastName || emp.user?.lastName || '',
-          email: emp.email || emp.user?.email || '',
-          category: emp.category || emp.user?.role || 'AGENT_BCRG',
-          department: emp.department || emp.user?.department || '',
-          jobTitle: emp.jobTitle || emp.user?.jobTitle || '',
-          gender: emp.gender || 'M',
-          birthDate: emp.birthDate || '',
-          phone: emp.phone || emp.user?.phone || '',
-          bloodGroup: emp.bloodGroup,
-          allergies: (emp.allergies || []).map((a: any) => typeof a === 'string' ? a : a.substance || a.allergyType || 'Allergie'),
-          chronicConditions: emp.medicalHistory ? [emp.medicalHistory] : (emp.chronicConditions || []),
-          createdAt: emp.createdAt || new Date().toISOString()
-        };
+        return normalizeBackendPatient(json.data);
       }
       return null;
     } catch (e) {
@@ -387,19 +396,7 @@ export const apiService = {
       const response = await fetchAuth(`${API_BASE_URL}/api/doctor/patients/search?q=${encodeURIComponent(query)}&limit=${limit}`);
       const json = await response.json();
       if (response.ok && json.success) {
-        return json.data.map((emp: any) => ({
-          ...emp,
-          id: emp.id,
-          matricule: emp.matricule || emp.registrationNumber || emp.user?.matricule || '',
-          firstName: emp.firstName || emp.user?.firstName || '',
-          lastName: emp.lastName || emp.user?.lastName || '',
-          category: emp.category || emp.user?.role || 'AGENT_BCRG',
-          department: emp.department || emp.user?.department || '',
-          jobTitle: emp.jobTitle || emp.user?.jobTitle || '',
-          gender: emp.gender || 'M',
-          allergies: (emp.allergies || []).map((a: any) => typeof a === 'string' ? a : a.substance || a.allergyType || 'Allergie'),
-          chronicConditions: emp.medicalHistory ? [emp.medicalHistory] : []
-        }));
+        return (json.data || []).map(normalizeBackendPatient);
       }
       return [];
     } catch (e) {
@@ -416,13 +413,13 @@ export const apiService = {
 
       const payload = isUpdate
         ? {
-            phone: patient.phone,
-            department: patient.department,
-            jobTitle: patient.jobTitle,
-            bloodGroup: patient.bloodGroup,
+            phone: patient.phone || undefined,
+            department: patient.department || undefined,
+            jobTitle: patient.jobTitle || undefined,
+            bloodGroup: patient.bloodGroup || undefined,
             medicalHistory: Array.isArray(patient.chronicConditions)
               ? patient.chronicConditions.join(', ')
-              : patient.medicalHistory || ''
+              : patient.medicalHistory !== undefined ? patient.medicalHistory : undefined
           }
         : {
             matricule: String(patient.matricule || '').trim(),
@@ -448,7 +445,8 @@ export const apiService = {
       if (response.ok && json.success) {
         return { success: true, data: json.data };
       }
-      return { success: false, error: json.message || 'Erreur lors de la sauvegarde du patient' };
+      const fieldError = Array.isArray(json.errors) && json.errors.length > 0 ? json.errors[0].message : null;
+      return { success: false, error: fieldError || json.message || 'Erreur lors de la sauvegarde du patient' };
     } catch (e: any) {
       console.error('Erreur savePatient:', e);
       return { success: false, error: e.message || 'Erreur réseau' };
@@ -469,17 +467,82 @@ export const apiService = {
     }
   },
 
+  addPatientAllergy: async (
+    patientId: string,
+    allergy: {
+      allergyType: 'DRUG' | 'FOOD' | 'OCCUPATIONAL' | 'OTHER';
+      substance: string;
+      reactionDetails?: string;
+      severity?: 'MILD' | 'MODERATE' | 'SEVERE';
+    }
+  ): Promise<{ success: boolean; data?: any; error?: string }> => {
+    try {
+      const response = await fetchAuth(`${API_BASE_URL}/api/employees/${patientId}/allergies`, {
+        method: 'POST',
+        body: JSON.stringify({
+          allergyType: allergy.allergyType,
+          substance: allergy.substance.trim(),
+          reactionDetails: allergy.reactionDetails?.trim() || '',
+          severity: allergy.severity || 'MODERATE'
+        })
+      });
+      const json = await response.json();
+      if (response.ok && json.success) {
+        return { success: true, data: json.data };
+      }
+      return { success: false, error: json.message || "Impossible d'enregistrer l'allergie" };
+    } catch (e: any) {
+      console.error('Erreur addPatientAllergy:', e);
+      return { success: false, error: e.message || 'Erreur réseau' };
+    }
+  },
+
+  deletePatientAllergy: async (patientId: string, allergyId: string): Promise<boolean> => {
+    try {
+      const response = await fetchAuth(`${API_BASE_URL}/api/employees/${patientId}/allergies/${allergyId}`, {
+        method: 'DELETE'
+      });
+      const json = await response.json();
+      return Boolean(response.ok && json.success);
+    } catch (e) {
+      console.error('Erreur deletePatientAllergy:', e);
+      return false;
+    }
+  },
+
   // ──────────────────────────────────────────────────────────────────────────
   // 2. CONSULTATIONS DU MEDECIN (/api/doctor/consultations)
   // ──────────────────────────────────────────────────────────────────────────
-  getConsultations: async (params?: { search?: string; status?: string; type?: string; page?: number; limit?: number }): Promise<Consultation[]> => {
+  getConsultationsStats: async (): Promise<{ consultationsThisMonth: number; recentEmergencies: number; waitingOrInProgressToday: number } | null> => {
+    try {
+      const response = await fetchAuth(`${API_BASE_URL}/api/doctor/consultations/stats`);
+      const json = await response.json();
+      if (response.ok && json.success) {
+        return json.data;
+      }
+      return null;
+    } catch (e) {
+      console.error('Erreur getConsultationsStats:', e);
+      return null;
+    }
+  },
+
+  getConsultations: async (params?: { search?: string; status?: string; type?: string; date?: string; page?: number; limit?: number }): Promise<Consultation[]> => {
     try {
       const searchParams = new URLSearchParams();
       if (params?.search) searchParams.append('search', params.search);
-      if (params?.status) searchParams.append('status', params.status);
-      if (params?.type) searchParams.append('type', params.type);
+      if (params?.status && params.status !== 'ALL') {
+        const mappedStatus =
+          params.status === 'TERMINEE' ? 'COMPLETED' :
+          params.status === 'EN_COURS' ? 'IN_PROGRESS' :
+          params.status === 'EN_ATTENTE' ? 'WAITING' :
+          params.status;
+        searchParams.append('status', mappedStatus);
+      }
+      if (params?.type && params.type !== 'ALL') searchParams.append('type', params.type);
+      if (params?.date) searchParams.append('date', params.date);
       if (params?.page) searchParams.append('page', String(params.page));
-      if (params?.limit) searchParams.append('limit', String(params.limit));
+      searchParams.append('limit', String(params?.limit || 100));
 
       const qs = searchParams.toString();
       const url = `${API_BASE_URL}/api/doctor/consultations${qs ? `?${qs}` : ''}`;
@@ -498,14 +561,15 @@ export const apiService = {
           patientName: c.fullName || c.patientName || c.patient?.fullName || c.patient?.user?.fullName || (c.patient?.user?.firstName ? `${c.patient.user.firstName} ${c.patient.user.lastName}` : (c.patient?.firstName ? `${c.patient.firstName} ${c.patient.lastName}` : 'Patient')),
           patientMatricule: c.matricule || c.patientMatricule || c.patient?.matricule || c.patient?.registrationNumber || c.patient?.user?.matricule || '',
           patientId: c.patientId || c.patient?.id || '',
-          doctorName: c.doctorName || (c.doctor ? `Dr. ${c.doctor.firstName} ${c.doctor.lastName}` : 'Dr. BCRG'),
-          doctorId: c.doctorId || '',
+          doctorName: c.doctorName || c.doctor?.name || (c.doctor?.firstName ? `Dr. ${c.doctor.firstName} ${c.doctor.lastName}` : 'Dr. BCRG'),
+          doctorId: c.doctorId || c.doctor?.id || '',
           date: c.consultationDate || c.createdAt || c.date || new Date().toISOString(),
           vitals: c.vitalSigns || c.vitals ? {
             tension: c.vitalSigns?.bloodPressure || c.vitals?.tension || '',
-            temperature: c.vitalSigns?.temperatureC || c.vitals?.temperature,
-            height: c.vitalSigns?.heightCm || c.vitals?.height,
-            weight: c.vitalSigns?.weightKg || c.vitals?.weight
+            temperature: c.vitalSigns?.temperatureC ?? c.vitals?.temperature,
+            height: c.vitalSigns?.heightCm ?? c.vitals?.height,
+            weight: c.vitalSigns?.weightKg ?? c.vitals?.weight,
+            bloodGroup: c.vitalSigns?.bloodGroup ?? c.vitals?.bloodGroup
           } : { tension: '' },
           glycemia: c.glycemiaCheck ? {
             performed: c.glycemiaCheck.performed,
@@ -539,6 +603,7 @@ export const apiService = {
       const json = await response.json();
       if (response.ok && json.success) {
         const c = json.data;
+        const latestVital = Array.isArray(c.vitalSigns) ? c.vitalSigns[0] : (c.latestVitalsSummary || c.vitalSigns);
         return {
           ...c,
           id: c.id,
@@ -546,16 +611,17 @@ export const apiService = {
           symptoms: c.reason || c.symptoms || '',
           notes: c.advice || c.notes || '',
           status: c.status === 'COMPLETED' ? 'TERMINEE' : c.status === 'WAITING' ? 'EN_ATTENTE' : 'EN_COURS',
-          patientName: c.patient?.user ? `${c.patient.user.firstName} ${c.patient.user.lastName}` : 'Patient',
+          patientName: c.patient?.user ? `${c.patient.user.firstName} ${c.patient.user.lastName}` : (c.patient?.fullName || 'Patient'),
           patientMatricule: c.patient?.registrationNumber || c.patient?.user?.matricule || '',
           patientId: c.patientId || c.patient?.id || '',
-          doctorName: c.doctor ? `Dr. ${c.doctor.firstName} ${c.doctor.lastName}` : 'Dr. BCRG',
+          doctorName: c.doctor?.name || (c.doctor?.firstName ? `Dr. ${c.doctor.firstName} ${c.doctor.lastName}` : 'Dr. BCRG'),
           date: c.consultationDate || c.createdAt,
-          vitals: c.vitalSigns ? {
-            tension: c.vitalSigns.bloodPressure || '',
-            temperature: c.vitalSigns.temperatureC,
-            height: c.vitalSigns.heightCm,
-            weight: c.vitalSigns.weightKg
+          vitals: latestVital ? {
+            tension: latestVital.bloodPressure || '',
+            temperature: latestVital.temperatureC,
+            height: latestVital.heightCm,
+            weight: latestVital.weightKg,
+            bloodGroup: latestVital.bloodGroup || c.patient?.bloodGroup
           } : { tension: '' },
           glycemia: c.glycemiaCheck ? {
             performed: c.glycemiaCheck.performed,
@@ -598,7 +664,8 @@ export const apiService = {
           bloodPressure: consultation.vitals.tension || undefined,
           temperatureC: consultation.vitals.temperature ? Number(consultation.vitals.temperature) : undefined,
           heightCm: consultation.vitals.height ? Number(consultation.vitals.height) : undefined,
-          weightKg: consultation.vitals.weight ? Number(consultation.vitals.weight) : undefined
+          weightKg: consultation.vitals.weight ? Number(consultation.vitals.weight) : undefined,
+          bloodGroup: consultation.vitals.bloodGroup || undefined
         };
       }
 
@@ -658,7 +725,8 @@ export const apiService = {
           bloodPressure: updates.vitals.tension || undefined,
           temperatureC: updates.vitals.temperature ? Number(updates.vitals.temperature) : undefined,
           heightCm: updates.vitals.height ? Number(updates.vitals.height) : undefined,
-          weightKg: updates.vitals.weight ? Number(updates.vitals.weight) : undefined
+          weightKg: updates.vitals.weight ? Number(updates.vitals.weight) : undefined,
+          bloodGroup: updates.vitals.bloodGroup || undefined
         };
       }
 
@@ -793,7 +861,12 @@ export const apiService = {
       const response = await fetchAuth(`${API_BASE_URL}/api/doctor/patients/${patientId}/medical-record`);
       const json = await response.json();
       if (response.ok && json.success) {
-        return json.data as PatientMedicalRecord;
+        const data = json.data;
+        return {
+          ...data,
+          vitalSigns: data.vitalSigns || data.vitalSignsHistory || [],
+          glycemiaChecks: data.glycemiaChecks || data.glycemiaHistory || []
+        } as PatientMedicalRecord;
       }
       return null;
     } catch (e) {
@@ -925,7 +998,7 @@ export const apiService = {
   },
 
   // ──────────────────────────────────────────────────────────────────────────
-  // 6. AUTHENTIFICATION AVANCEE (Mot de passe initial)
+  // 6. AUTHENTIFICATION AVANCEE (Mot de passe initial, SSO, Logout)
   // ──────────────────────────────────────────────────────────────────────────
   changeInitialPassword: async (currentPassword: string, newPassword: string, confirmPassword: string): Promise<{ success: boolean; error?: string }> => {
     try {
@@ -937,16 +1010,14 @@ export const apiService = {
       if (response.ok && json.success) {
         return { success: true };
       }
-      return { success: false, error: json.message || 'Échec de la modification du mot de passe' };
+      const fieldError = Array.isArray(json.errors) && json.errors.length > 0 ? json.errors[0].message : null;
+      return { success: false, error: fieldError || json.message || 'Échec de la modification du mot de passe' };
     } catch (e: any) {
       console.error('Erreur changeInitialPassword:', e);
       return { success: false, error: e.message || 'Erreur réseau' };
     }
   },
 
-  /**
-   * Connexion Single Sign-On (SSO) fédérée BCRG HUB
-   */
   loginWithSso: async (ssoToken: string): Promise<{ success: boolean; data?: any; error?: string }> => {
     try {
       const response = await fetch(`${API_BASE_URL}/api/auth/sso-login`, {
@@ -964,30 +1035,40 @@ export const apiService = {
       return { success: false, error: e.message || 'Erreur réseau lors de la validation SSO' };
     }
   },
+
+  logoutServer: async (): Promise<void> => {
+    try {
+      await fetchAuth(`${API_BASE_URL}/api/auth/logout`, { method: 'POST' });
+    } catch {
+      // Ignore network errors during logout
+    }
+  },
+
   // ──────────────────────────────────────────────────────────────────────────
   // 8. AGENDA & RENDEZ-VOUS MEDECIN (/api/doctor/agenda)
   // ──────────────────────────────────────────────────────────────────────────
   getDoctorAgenda: async (startDate?: string, endDate?: string): Promise<Appointment[]> => {
     try {
-      const queryParams = new URLSearchParams();
-      if (startDate) queryParams.set('startDate', startDate);
-      if (endDate) queryParams.set('endDate', endDate);
-      const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
+      const now = new Date();
+      const defaultStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().split('T')[0];
+      const defaultEnd = new Date(now.getFullYear(), now.getMonth() + 2, 0).toISOString().split('T')[0];
 
-      const res = await fetchAuth(`${API_BASE_URL}/api/doctor/agenda${queryString}`);
+      const queryParams = new URLSearchParams();
+      queryParams.set('startDate', startDate || defaultStart);
+      queryParams.set('endDate', endDate || defaultEnd);
+
+      const res = await fetchAuth(`${API_BASE_URL}/api/doctor/agenda?${queryParams.toString()}`);
       if (res.ok) {
         const json = await res.json();
         const rawItems: any[] = Array.isArray(json.data) ? json.data : (json.data?.appointments || []);
-        if (rawItems.length > 0) {
-          const list = rawItems.map(normalizeBackendAppointment);
-          saveStorage('bcrg_appointments_v4', list);
-          return list;
-        }
+        const list = rawItems.map(normalizeBackendAppointment);
+        saveStorage('bcrg_appointments_v4', list);
+        return list;
       }
     } catch (e) {
-      console.warn('Fallback getDoctorAgenda vers cache local:', e);
+      console.warn('Erreur getDoctorAgenda:', e);
     }
-    return loadStorage('bcrg_appointments_v4', INITIAL_APPOINTMENTS);
+    return [];
   },
 
   getDayAgenda: async (date: string): Promise<Appointment[]> => {
@@ -1014,36 +1095,37 @@ export const apiService = {
     } catch (e) {
       console.error('Erreur approveDoctorAppointment:', e);
     }
-    apiService.updateAppointment(id, { status: 'CONFIRME' });
-    return true;
+    return false;
   },
 
-  rescheduleDoctorAppointment: async (id: string, newDate: string, newTime: string, reason?: string): Promise<boolean> => {
+  rescheduleDoctorAppointment: async (id: string, newDate: string, newTime: string, reason?: string): Promise<{ success: boolean; error?: string }> => {
     try {
       const res = await fetchAuth(`${API_BASE_URL}/api/doctor/agenda/appointments/${id}/reschedule`, {
         method: 'PATCH',
         body: JSON.stringify({ newDate, newTime, reason })
       });
-      if (res.ok) return true;
-    } catch (e) {
+      const json = await res.json().catch(() => null);
+      if (res.ok && json?.success) {
+        return { success: true };
+      }
+      return { success: false, error: json?.message || 'Impossible de reprogrammer ce rendez-vous' };
+    } catch (e: any) {
       console.error('Erreur rescheduleDoctorAppointment:', e);
+      return { success: false, error: e.message || 'Erreur réseau' };
     }
-    apiService.updateAppointment(id, { dateTime: `${newDate}T${newTime}`, status: 'PROGRAMME' });
-    return true;
   },
 
   cancelDoctorAppointment: async (id: string, reason: string): Promise<boolean> => {
     try {
       const res = await fetchAuth(`${API_BASE_URL}/api/doctor/agenda/appointments/${id}/cancel`, {
         method: 'PATCH',
-        body: JSON.stringify({ reason })
+        body: JSON.stringify({ reason: reason && reason.length >= 3 ? reason : 'Annulé par le praticien' })
       });
       if (res.ok) return true;
     } catch (e) {
       console.error('Erreur cancelDoctorAppointment:', e);
     }
-    apiService.updateAppointment(id, { status: 'ANNULE', cancellationReason: reason });
-    return true;
+    return false;
   },
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -1055,15 +1137,25 @@ export const apiService = {
       if (res.ok) {
         const json = await res.json();
         const rawItems = Array.isArray(json.data) ? json.data : [];
-        if (rawItems.length > 0) {
-          const list = rawItems.map(normalizeBackendAppointment);
-          return list;
-        }
+        return rawItems.map(normalizeBackendAppointment);
       }
     } catch (e) {
       console.warn('Erreur getMyPatientAppointments:', e);
     }
-    return loadStorage('bcrg_appointments_v4', INITIAL_APPOINTMENTS);
+    return [];
+  },
+
+  getAvailableAppointmentDays: async (month: string): Promise<AvailableDaysResponse | null> => {
+    try {
+      const res = await fetchAuth(`${API_BASE_URL}/api/patient/appointments/available-days?month=${encodeURIComponent(month)}`);
+      if (res.ok) {
+        const json = await res.json();
+        return json.data || null;
+      }
+    } catch (e) {
+      console.warn('Erreur getAvailableAppointmentDays:', e);
+    }
+    return null;
   },
 
   getAvailableAppointmentSlots: async (date: string): Promise<AvailableSlotsResponse | null> => {
@@ -1088,7 +1180,7 @@ export const apiService = {
     try {
       let mappedType = 'GENERAL';
       const t = (data.type || '').toUpperCase();
-      if (t.includes('PERIODIC') || t.includes('ANNUEL') || t.includes('SYSTEMATIQUE')) mappedType = 'PERIODIC';
+      if (t.includes('PERIODIC') || t.includes('ANNUEL') || t.includes('SYSTEMATIQUE') || t.includes('EMBAUCHE')) mappedType = 'PERIODIC';
       else if (t.includes('URGENT') || t.includes('INSTANT')) mappedType = 'INSTANT';
 
       const res = await fetchAuth(`${API_BASE_URL}/api/patient/appointments`, {
@@ -1104,7 +1196,8 @@ export const apiService = {
       if (res.ok && json.success) {
         return { success: true, data: json.data };
       }
-      return { success: false, error: json.message || 'Impossible de réserver le créneau' };
+      const fieldError = Array.isArray(json.errors) && json.errors.length > 0 ? json.errors[0].message : null;
+      return { success: false, error: fieldError || json.message || 'Impossible de réserver le créneau' };
     } catch (e: any) {
       console.error('Erreur bookPatientAppointment:', e);
       return { success: false, error: e.message || 'Erreur réseau lors de la réservation' };
@@ -1115,14 +1208,13 @@ export const apiService = {
     try {
       const res = await fetchAuth(`${API_BASE_URL}/api/patient/appointments/${id}/cancel`, {
         method: 'PATCH',
-        body: JSON.stringify({ cancellationReason: cancellationReason || 'Annulation demandée par le patient' })
+        body: JSON.stringify({ reason: cancellationReason || 'Annulation demandée par le patient' })
       });
       if (res.ok) return true;
     } catch (e) {
       console.error('Erreur cancelPatientAppointment:', e);
     }
-    apiService.updateAppointment(id, { status: 'ANNULE', cancellationReason });
-    return true;
+    return false;
   },
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -1142,7 +1234,15 @@ export const apiService = {
       });
       if (res.ok) {
         const json = await res.json();
-        return json.data;
+        if (json.success && json.data) {
+          return {
+            ...json.data,
+            id: json.data.id || id,
+            notes: json.data.advice ?? data?.advice ?? '',
+            diagnosis: json.data.diagnosis ?? data?.diagnosis ?? '',
+            status: 'TERMINEE'
+          } as Consultation;
+        }
       }
     } catch (e) {
       console.warn('Fallback vers updateConsultation:', e);
@@ -1188,17 +1288,50 @@ export const apiService = {
     }
   },
 
-  getHrDueEmployees: async (): Promise<DueEmployeeItem[]> => {
+  getHrDueEmployeesSummary: async (): Promise<DueEmployeesSummary | null> => {
     try {
       const res = await fetchAuth(`${API_BASE_URL}/api/hr/periodicity/due-employees`);
       if (res.ok) {
         const json = await res.json();
-        return Array.isArray(json.data) ? json.data : [];
+        const payload = json.data;
+        if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+          const rawEmployees = Array.isArray(payload.employees) ? payload.employees : [];
+          return {
+            totalEmployees: payload.totalEmployees ?? rawEmployees.length,
+            upToDateCount: payload.upToDateCount ?? 0,
+            dueSoonCount: payload.dueSoonCount ?? 0,
+            overdueCount: payload.overdueCount ?? 0,
+            smrCount: payload.smrCount ?? 0,
+            coverageRatePercent: payload.coverageRatePercent ?? 100,
+            employees: rawEmployees.map(normalizeDueEmployee)
+          };
+        }
+        if (Array.isArray(payload)) {
+          const employees = payload.map(normalizeDueEmployee);
+          const upToDateCount = employees.filter(e => e.status === 'A_JOUR').length;
+          const dueSoonCount = employees.filter(e => e.status === 'BIENTOT_DUE').length;
+          const overdueCount = employees.filter(e => e.status === 'EN_RETARD').length;
+          const totalEmployees = employees.length;
+          return {
+            totalEmployees,
+            upToDateCount,
+            dueSoonCount,
+            overdueCount,
+            smrCount: employees.filter(e => e.isSmr).length,
+            coverageRatePercent: totalEmployees > 0 ? Math.round((upToDateCount / totalEmployees) * 100) : 100,
+            employees
+          };
+        }
       }
     } catch (e) {
-      console.warn('Erreur getHrDueEmployees:', e);
+      console.warn('Erreur getHrDueEmployeesSummary:', e);
     }
-    return [];
+    return null;
+  },
+
+  getHrDueEmployees: async (): Promise<DueEmployeeItem[]> => {
+    const summary = await apiService.getHrDueEmployeesSummary();
+    return summary ? summary.employees : [];
   },
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -1249,35 +1382,32 @@ export const apiService = {
   getDashboardStats: async (): Promise<DashboardStats> => {
     let consultationsToday = 0;
     let activePatients = 0;
+    let lowStockAlerts = 0;
+    let pendingAppointments = 0;
 
-    // Tente de récupérer les vraies statistiques du backend
     try {
       const doctorData = await apiService.getDoctorDashboard();
       if (doctorData) {
         consultationsToday = doctorData.kpis.consultationsToday;
         activePatients = doctorData.kpis.usersCount || doctorData.kpis.patientsExaminedCount;
+        lowStockAlerts = doctorData.alerts?.pendingCount ?? (doctorData.diabetesKpis?.remainingStrips <= 20 ? 1 : 0);
       } else {
         const patients = await apiService.getPatients();
         activePatients = patients.length;
-        const res = await fetchAuth(`${API_BASE_URL}/api/doctor/consultations/stats`);
-        const json = await res.json();
-        if (res.ok && json.success) {
-          consultationsToday = json.data?.waitingOrInProgressToday || 0;
+        const statsData = await apiService.getConsultationsStats();
+        if (statsData) {
+          consultationsToday = statsData.waitingOrInProgressToday || 0;
         }
       }
     } catch (e) {
       console.warn('Fallback local stats:', e);
     }
 
-    const medications = apiService.getMedications();
-    const appointments = apiService.getAppointments();
-    const lowStockCount = medications.filter((m) => m.stockQuantity <= m.minQuantityThreshold).length;
-
     return {
       consultationsToday,
       activePatients,
-      lowStockAlerts: lowStockCount,
-      pendingAppointments: appointments.filter((a) => a.status === 'PROGRAMME' || a.status === 'CONFIRME').length,
+      lowStockAlerts,
+      pendingAppointments,
     };
   }
 };

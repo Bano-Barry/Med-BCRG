@@ -1,12 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Search, Upload, UserPlus, Users, X, Shield, Eye,
   Lock, Unlock, Trash2, Edit2, MoreHorizontal, Download,
-  Filter, CheckCircle, Clock, AlertTriangle, Calendar
+  CheckCircle, Clock, AlertTriangle, Calendar
 } from 'lucide-react';
-import { useAuth } from '../../hooks/useAuth';
 import { useNotifications } from '../../hooks/useNotifications';
 import { apiService } from '../../services/api';
+import { DueEmployeeItem, Patient } from '../../types';
 
 // ───── TYPES ────────────────────────────────────────────────────────────────
 type EmployeeRole = 'PATIENT' | 'MEDECIN' | 'ADMIN' | 'RH';
@@ -31,6 +31,7 @@ interface Employee {
   visiteStatus: VisiteStatus;
   createdAt: string;
   bloodGroup?: string;
+  medicalHistory?: string;
 }
 
 // ───── HELPERS ───────────────────────────────────────────────────────────────
@@ -67,7 +68,7 @@ const STATUSES: EmployeeStatus[] = ['ACTIF', 'INACTIF', 'SUSPENDU'];
 export const UsersManagementPage: React.FC = () => {
   const { showToast } = useNotifications();
   const [employees, setEmployees] = useState<Employee[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [, setIsLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterRole, setFilterRole] = useState<EmployeeRole | 'ALL'>('ALL');
   const [filterStatus, setFilterStatus] = useState<EmployeeStatus | 'ALL'>('ALL');
@@ -79,6 +80,9 @@ export const UsersManagementPage: React.FC = () => {
   const [showPlanifierModal, setShowPlanifierModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [isImportingCsv, setIsImportingCsv] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [addForm, setAddForm] = useState({
     matricule: '',
@@ -90,7 +94,8 @@ export const UsersManagementPage: React.FC = () => {
     jobTitle: '',
     gender: 'M' as 'M' | 'F',
     role: 'PATIENT' as EmployeeRole,
-    bloodGroup: ''
+    bloodGroup: '',
+    medicalHistory: ''
   });
 
   const [editForm, setEditForm] = useState<Partial<Employee>>({});
@@ -101,8 +106,19 @@ export const UsersManagementPage: React.FC = () => {
   const loadEmployees = async () => {
     setIsLoading(true);
     try {
-      const data = await apiService.getPatients();
-      const mapped: Employee[] = data.map((p, idx) => {
+      const [data, dueItems]: [Patient[], DueEmployeeItem[]] = await Promise.all([
+        apiService.getPatients(),
+        apiService.getHrDueEmployees().catch((): DueEmployeeItem[] => [])
+      ]);
+
+      const dueById = new Map<string, DueEmployeeItem>(
+        dueItems.map((item: DueEmployeeItem): [string, DueEmployeeItem] => [item.id, item])
+      );
+      const dueByMatricule = new Map<string, DueEmployeeItem>(
+        dueItems.map((item: DueEmployeeItem): [string, DueEmployeeItem] => [item.matricule, item])
+      );
+
+      const mapped: Employee[] = data.map((p: Patient) => {
         let role: EmployeeRole = 'PATIENT';
         const userRole = ((p as any).user?.role || (p as any).role || '').toString().toUpperCase();
         const cat = ((p.category as string) || '').toUpperCase();
@@ -111,6 +127,8 @@ export const UsersManagementPage: React.FC = () => {
         } else if (cat === 'ADMIN' || cat === 'RH' || userRole === 'HR' || userRole === 'ADMIN') {
           role = 'ADMIN';
         }
+
+        const dueInfo: DueEmployeeItem | undefined = dueById.get(p.id) || dueByMatricule.get(p.matricule);
 
         return {
           id: p.id,
@@ -125,11 +143,12 @@ export const UsersManagementPage: React.FC = () => {
           role,
           status: 'ACTIF',
           dateEmbauche: p.createdAt ? p.createdAt.split('T')[0] : '2024-01-01',
-          lastVisit: idx % 3 === 0 ? '2025-11-12' : null,
-          nextVisit: idx % 2 === 0 ? '2026-11-15' : null,
-          visiteStatus: idx % 4 === 0 ? 'EN_RETARD' : idx % 3 === 0 ? 'BIENTOT_DUE' : 'A_JOUR',
+          lastVisit: dueInfo?.lastVisitDate || null,
+          nextVisit: dueInfo?.nextDueDate || null,
+          visiteStatus: dueInfo?.status || 'A_JOUR',
           createdAt: p.createdAt,
-          bloodGroup: p.bloodGroup
+          bloodGroup: p.bloodGroup,
+          medicalHistory: p.medicalHistory || ''
         };
       });
       setEmployees(mapped);
@@ -171,7 +190,11 @@ export const UsersManagementPage: React.FC = () => {
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
   };
@@ -225,7 +248,8 @@ export const UsersManagementPage: React.FC = () => {
       phone: editForm.phone,
       department: editForm.department,
       jobTitle: editForm.poste,
-      bloodGroup: editForm.bloodGroup
+      bloodGroup: editForm.bloodGroup,
+      medicalHistory: editForm.medicalHistory
     });
     setIsSubmitting(false);
 
@@ -253,7 +277,8 @@ export const UsersManagementPage: React.FC = () => {
       gender: addForm.gender,
       department: addForm.department,
       jobTitle: addForm.jobTitle,
-      bloodGroup: addForm.bloodGroup
+      bloodGroup: addForm.bloodGroup,
+      medicalHistory: addForm.medicalHistory
     });
     setIsSubmitting(false);
 
@@ -270,11 +295,88 @@ export const UsersManagementPage: React.FC = () => {
         jobTitle: '',
         gender: 'M',
         role: 'PATIENT',
-        bloodGroup: ''
+        bloodGroup: '',
+        medicalHistory: ''
       });
       loadEmployees();
     } else {
       showToast('Erreur', res.error || 'Impossible d\'ajouter l\'employé.', 'error');
+    }
+  };
+
+  const handleImportCsvSubmit = async () => {
+    if (!csvFile) {
+      showToast('Fichier manquant', 'Veuillez sélectionner un fichier CSV à importer.', 'error');
+      return;
+    }
+    setIsImportingCsv(true);
+    try {
+      const text = await csvFile.text();
+      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      if (lines.length < 2) {
+        showToast('Fichier vide', 'Le fichier CSV ne contient aucune ligne de données.', 'error');
+        setIsImportingCsv(false);
+        return;
+      }
+
+      const separator = lines[0].includes(';') ? ';' : ',';
+      const headers = lines[0].split(separator).map(h => h.replace(/^"|"$/g, '').trim().toLowerCase());
+
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (let i = 1; i < lines.length; i++) {
+        const values = lines[i].split(separator).map(v => v.replace(/^"|"$/g, '').trim());
+        const row: Record<string, string> = {};
+        headers.forEach((h, idx) => {
+          row[h] = values[idx] || '';
+        });
+
+        const matricule = row['matricule'] || values[0] || '';
+        const firstName = row['prenom'] || row['prénom'] || row['firstname'] || values[1] || '';
+        const lastName = row['nom'] || row['lastname'] || values[2] || '';
+        const genderRaw = (row['genre'] || row['gender'] || values[3] || 'M').toUpperCase();
+        const gender: 'M' | 'F' = genderRaw.startsWith('F') ? 'F' : 'M';
+        const email = row['email'] || values[4] || '';
+        const phone = row['telephone'] || row['téléphone'] || row['phone'] || values[5] || '';
+        const department = row['direction'] || row['department'] || values[6] || 'Administration';
+        const jobTitle = row['poste'] || row['jobtitle'] || values[7] || 'Collaborateur';
+
+        if (!matricule || !firstName || !lastName) {
+          errorCount++;
+          continue;
+        }
+
+        const res = await apiService.savePatient({
+          matricule,
+          firstName,
+          lastName,
+          gender,
+          email: email || undefined,
+          phone: phone || undefined,
+          department,
+          jobTitle
+        });
+
+        if (res.success) {
+          successCount++;
+        } else {
+          errorCount++;
+        }
+      }
+
+      if (successCount > 0) {
+        showToast('Import terminé', `${successCount} employé(s) importé(s)${errorCount > 0 ? `, ${errorCount} ignoré(s)` : ''}.`, 'success');
+        setShowImportModal(false);
+        setCsvFile(null);
+        await loadEmployees();
+      } else {
+        showToast('Échec de l\'import', `Aucun employé n'a pu être importé (${errorCount} erreur(s)). Vérifiez que les matricules sont numériques (min 4 chiffres).`, 'error');
+      }
+    } catch {
+      showToast('Erreur', 'Impossible de lire le fichier CSV.', 'error');
+    } finally {
+      setIsImportingCsv(false);
     }
   };
 
@@ -641,9 +743,10 @@ export const UsersManagementPage: React.FC = () => {
                 <div className="p-6 space-y-3">
                   {[
                     { label: 'Email', value: selectedEmployee.email },
-                    { label: 'Téléphone', value: selectedEmployee.phone },
+                    { label: 'Téléphone', value: selectedEmployee.phone || '—' },
                     { label: 'Direction', value: selectedEmployee.department },
                     { label: 'Poste', value: selectedEmployee.poste },
+                    { label: 'Groupe sanguin', value: selectedEmployee.bloodGroup || 'Non renseigné' },
                     { label: "Date d'embauche", value: new Date(selectedEmployee.dateEmbauche).toLocaleDateString('fr-FR') },
                   ].map(({ label, value }) => (
                     <div key={label} className="flex items-start justify-between py-2 border-b border-slate-50 last:border-0">
@@ -732,16 +835,35 @@ export const UsersManagementPage: React.FC = () => {
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg">
                 <div className="p-6 border-b border-slate-100 flex items-center justify-between">
                   <h2 className="text-lg font-bold text-slate-800">Importer des employés</h2>
-                  <button onClick={() => setShowImportModal(false)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400">
+                  <button onClick={() => { setShowImportModal(false); setCsvFile(null); }} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400">
                     <X className="w-5 h-5" />
                   </button>
                 </div>
                 <div className="p-6 space-y-4">
-                  <div className="border-2 border-dashed border-slate-200 rounded-2xl p-10 text-center hover:border-[#1b3b31]/40 transition-colors cursor-pointer">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="hidden"
+                    onChange={e => setCsvFile(e.target.files?.[0] || null)}
+                  />
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    className="border-2 border-dashed border-slate-200 rounded-2xl p-10 text-center hover:border-[#1b3b31]/40 transition-colors cursor-pointer"
+                  >
                     <Upload className="w-10 h-10 mx-auto text-slate-300 mb-3" />
-                    <p className="font-semibold text-slate-700">Glissez votre fichier ici</p>
-                    <p className="text-sm text-slate-400 mt-1">Formats acceptés : .xlsx, .csv</p>
-                    <button className="mt-4 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200 transition-colors">
+                    <p className="font-semibold text-slate-700">
+                      {csvFile ? csvFile.name : 'Sélectionnez votre fichier CSV'}
+                    </p>
+                    <p className="text-sm text-slate-400 mt-1">Format accepté : .csv (séparateur ; ou ,)</p>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        fileInputRef.current?.click();
+                      }}
+                      className="mt-4 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200 transition-colors"
+                    >
                       Parcourir les fichiers
                     </button>
                   </div>
@@ -755,8 +877,14 @@ export const UsersManagementPage: React.FC = () => {
                   </div>
                 </div>
                 <div className="p-4 border-t border-slate-100 flex justify-end gap-2">
-                  <button onClick={() => setShowImportModal(false)} className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">Annuler</button>
-                  <button className="px-4 py-2 text-sm font-medium bg-[#1b3b31] text-white rounded-lg hover:bg-[#142c24] transition-colors">Importer</button>
+                  <button onClick={() => { setShowImportModal(false); setCsvFile(null); }} className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">Annuler</button>
+                  <button
+                    onClick={handleImportCsvSubmit}
+                    disabled={!csvFile || isImportingCsv}
+                    className="px-4 py-2 text-sm font-medium bg-[#1b3b31] text-white rounded-lg hover:bg-[#142c24] transition-colors disabled:opacity-50"
+                  >
+                    {isImportingCsv ? 'Importation...' : 'Importer'}
+                  </button>
                 </div>
               </div>
             </div>
@@ -776,7 +904,7 @@ export const UsersManagementPage: React.FC = () => {
                 </div>
                 <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Matricule *</label>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Matricule * (chiffres uniquement)</label>
                     <input
                       type="text"
                       placeholder="Ex: 1042"
@@ -1008,16 +1136,16 @@ export const UsersManagementPage: React.FC = () => {
                 </div>
                 <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Prénom</label>
-                    <input type="text" value={editForm.firstName || ''} onChange={e => setEditForm(f => ({ ...f, firstName: e.target.value }))} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none transition-colors" />
+                    <label className="block text-xs font-semibold text-slate-500 mb-1">Prénom (non modifiable)</label>
+                    <input type="text" value={editForm.firstName || ''} disabled className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-100 text-slate-500 cursor-not-allowed outline-none" />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Nom</label>
-                    <input type="text" value={editForm.lastName || ''} onChange={e => setEditForm(f => ({ ...f, lastName: e.target.value }))} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none transition-colors" />
+                    <label className="block text-xs font-semibold text-slate-500 mb-1">Nom (non modifiable)</label>
+                    <input type="text" value={editForm.lastName || ''} disabled className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-100 text-slate-500 cursor-not-allowed outline-none" />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Email professionnel</label>
-                    <input type="email" value={editForm.email || ''} onChange={e => setEditForm(f => ({ ...f, email: e.target.value }))} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none transition-colors" />
+                    <label className="block text-xs font-semibold text-slate-500 mb-1">Email professionnel (non modifiable)</label>
+                    <input type="email" value={editForm.email || ''} disabled className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-100 text-slate-500 cursor-not-allowed outline-none" />
                   </div>
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">Téléphone</label>
@@ -1028,32 +1156,43 @@ export const UsersManagementPage: React.FC = () => {
                     <input type="text" value={editForm.poste || ''} onChange={e => setEditForm(f => ({ ...f, poste: e.target.value }))} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none transition-colors" />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Genre</label>
-                    <select value={editForm.gender || 'M'} onChange={e => setEditForm(f => ({ ...f, gender: e.target.value as 'M' | 'F' }))} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none">
-                      <option value="M">Masculin</option>
-                      <option value="F">Féminin</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Rôle d'accès</label>
-                    <select value={editForm.role || 'PATIENT'} onChange={e => setEditForm(f => ({ ...f, role: e.target.value as EmployeeRole }))} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none">
-                      {ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Statut du compte</label>
-                    <select value={editForm.status || 'ACTIF'} onChange={e => setEditForm(f => ({ ...f, status: e.target.value as EmployeeStatus }))} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none">
-                      {STATUSES.map(s => <option key={s} value={s}>{STATUS_CONFIG[s].label}</option>)}
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Groupe sanguin</label>
+                    <select value={editForm.bloodGroup || ''} onChange={e => setEditForm(f => ({ ...f, bloodGroup: e.target.value }))} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none">
+                      <option value="">Non renseigné</option>
+                      <option value="A+">A+</option>
+                      <option value="A-">A-</option>
+                      <option value="B+">B+</option>
+                      <option value="B-">B-</option>
+                      <option value="AB+">AB+</option>
+                      <option value="AB-">AB-</option>
+                      <option value="O+">O+</option>
+                      <option value="O-">O-</option>
                     </select>
                   </div>
                   <div className="md:col-span-2">
                     <label className="block text-xs font-semibold text-slate-700 mb-1">Direction / Département</label>
                     <input type="text" value={editForm.department || ''} onChange={e => setEditForm(f => ({ ...f, department: e.target.value }))} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none transition-colors" />
                   </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Antécédents médicaux / Notes dossier</label>
+                    <textarea
+                      rows={2}
+                      value={editForm.medicalHistory || ''}
+                      onChange={e => setEditForm(f => ({ ...f, medicalHistory: e.target.value }))}
+                      placeholder="Ex: Diabète type 2, HTA, suivi particulier..."
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:border-[#1b3b31] outline-none resize-none transition-colors"
+                    />
+                  </div>
                 </div>
                 <div className="p-4 border-t border-slate-100 flex justify-end gap-2">
                   <button onClick={() => setShowEditModal(false)} className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">Annuler</button>
-                  <button onClick={handleEditSave} className="px-4 py-2 text-sm font-medium bg-[#1b3b31] text-white rounded-lg hover:bg-[#142c24] transition-colors">Enregistrer les modifications</button>
+                  <button
+                    onClick={handleEditSave}
+                    disabled={isSubmitting}
+                    className="px-4 py-2 text-sm font-medium bg-[#1b3b31] text-white rounded-lg hover:bg-[#142c24] transition-colors disabled:opacity-50"
+                  >
+                    {isSubmitting ? 'Enregistrement...' : 'Enregistrer les modifications'}
+                  </button>
                 </div>
               </div>
             </div>
